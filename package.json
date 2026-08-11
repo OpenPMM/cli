@@ -1,0 +1,32 @@
+{
+  "name": "@openpmm/cli",
+  "version": "0.1.0",
+  "description": "First-party CLI for the OpenPMM public API",
+  "type": "module",
+  "bin": {
+    "openpmm": "src/openpmm.js"
+  },
+  "files": [
+    "src",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/openpmm/openpmm.git",
+    "directory": "packages/cli"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "scripts": {
+    "test": "node --test test/*.test.js",
+    "pack": "npm pack --dry-run"
+  }
+}

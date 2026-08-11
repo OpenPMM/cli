@@ -1,0 +1,825 @@
+#!/usr/bin/env node
+import { randomUUID } from 'node:crypto'
+import { createReadStream } from 'node:fs'
+import {
+  chmod,
+  mkdir,
+  readFile,
+  rename,
+  stat,
+  writeFile,
+} from 'node:fs/promises'
+import { homedir } from 'node:os'
+import { basename, dirname, extname, join } from 'node:path'
+import { stdin, stdout, stderr } from 'node:process'
+import { OPERATIONS, OPERATION_BY_COMMAND } from './operations.js'
+import {
+  CliError,
+  PublicApiTransport,
+  normalizeApiBaseUrl,
+} from './transport.js'
+
+export const VERSION = '0.1.0'
+const DEFAULT_API_BASE_URL = 'https://api.openpmm.com/v1'
+const CREDENTIAL_PATH = join(
+  homedir(),
+  '.config',
+  'openpmm',
+  'credentials.json'
+)
+
+export async function run(
+  argv = process.argv.slice(2),
+  io = { stdin, stdout, stderr },
+  dependencies = {}
+) {
+  let recoveryKey = null
+  try {
+    const parsed = parseArguments(argv)
+    if (parsed.flags.version) return write(io.stdout, `${VERSION}\n`)
+    if (parsed.words.length === 0 || parsed.flags.help)
+      return write(io.stdout, helpFor(parsed.words.join(' ')))
+
+    const special = parsed.words.slice(0, 2).join(' ')
+    if (special === 'auth login') return await authLogin(parsed, io)
+    if (special === 'auth logout') return await authLogout(parsed, io)
+
+    if (special === 'post-groups create') {
+      if (parsed.words.length > 3)
+        throw new CliError(
+          'Usage: openpmm post-groups create [group] --channel <channel> --body <copy>.',
+          { exitCode: 2 }
+        )
+      parsed.flags.when = 'draft'
+      if (parsed.words[2]) parsed.flags.group = parsed.words[2]
+      parsed.words = ['posts', 'create']
+    }
+
+    if (parsed.flags['dry-run']) {
+      const command = parsed.words.slice(0, 2).join(' ')
+      if (command === 'posts create') parsed.words = ['posts', 'validate']
+      else if (command === 'post-groups publish')
+        parsed.words = ['post-groups', 'validate', ...parsed.words.slice(2)]
+      else
+        throw new CliError(
+          '--dry-run is available for `posts create` and `post-groups publish`.',
+          { exitCode: 2 }
+        )
+    }
+
+    const assetWorkflow = ['assets upload', 'assets download'].includes(special)
+      ? special
+      : null
+
+    const match = assetWorkflow ? null : matchCommand(parsed.words)
+    if (!match && !assetWorkflow)
+      throw new CliError(
+        `Unknown command: ${parsed.words.join(' ')}. Run \`openpmm --help\` to see commands.`,
+        { exitCode: 2 }
+      )
+    if (parsed.flags.help)
+      return write(io.stdout, helpFor(assetWorkflow ?? match.operation.command))
+    if (match?.operation.confirm && !parsed.flags.yes)
+      throw new CliError(
+        `This command can publish, disconnect, or delete data. Review it, then rerun with --yes.`,
+        { code: 'confirmation_required', exitCode: 10 }
+      )
+
+    const baseUrl = normalizeApiBaseUrl(
+      parsed.flags['api-base-url'] ??
+        process.env.OPENPMM_API_BASE_URL ??
+        DEFAULT_API_BASE_URL
+    )
+    const apiKey =
+      process.env.OPENPMM_API_KEY ?? (await storedCredential(baseUrl))
+    const transport = new PublicApiTransport({
+      apiKey,
+      baseUrl,
+      fetchImpl: dependencies.fetchImpl,
+      stderr: io.stderr,
+    })
+    const workspace =
+      parsed.flags.workspace ?? process.env.OPENPMM_WORKSPACE ?? undefined
+    if (
+      (assetWorkflow || match.operation.path.includes('{workspace_id}')) &&
+      !workspace
+    )
+      throw new CliError(
+        'This command requires --workspace <id> or OPENPMM_WORKSPACE.',
+        { exitCode: 2 }
+      )
+
+    if (assetWorkflow === 'assets upload') {
+      recoveryKey = parsed.flags['idempotency-key'] ?? randomUUID()
+      parsed.flags['idempotency-key'] = recoveryKey
+      return await uploadAsset(transport, workspace, parsed, io)
+    }
+    if (assetWorkflow === 'assets download')
+      return await downloadAsset(transport, workspace, parsed, io)
+
+    const path = fillPath(match.operation.path, workspace, match.positionals)
+    let body = await requestBody(match.operation, parsed, io)
+    let etag = parsed.flags.etag
+
+    if (match.operation.id === 'createPosts' && body?.when !== 'draft') {
+      if (!parsed.flags.yes)
+        throw new CliError(
+          'This command publishes posts. Review it, then rerun with --yes.',
+          { code: 'confirmation_required', exitCode: 10 }
+        )
+      body.confirmed = true
+    }
+
+    if (match.operation.id === 'publishPostGroup' && !parsed.flags.file) {
+      if (parsed.flags.deferred) {
+        body = {
+          ...storedTimingBody(parsed),
+          confirmed: true,
+          validation: 'deferred',
+        }
+      } else {
+        const validation = await transport.request({
+          method: 'POST',
+          path: path.replace(/\/posts$/, '/post-validations'),
+          body: storedTimingBody(parsed),
+        })
+        body = {
+          ...storedTimingBody(parsed),
+          confirmed: true,
+          validation: 'synchronous',
+          destinationIds: validation.data.deliveries.map((delivery) => ({
+            channel: delivery.channel,
+            destinationId: delivery.destination_id,
+          })),
+          preflightHash: validation.data.request_hash,
+        }
+      }
+    }
+    if (match.operation.id === 'validatePostGroup' && !parsed.flags.file)
+      body = storedTimingBody(parsed)
+
+    if (match.operation.ifMatch && !etag) {
+      const readPath = etagReadPath(match.operation, path)
+      const current = await transport.request({ method: 'GET', path: readPath })
+      etag = current.headers.get('etag')
+      if (!etag)
+        throw new CliError(
+          `The API did not return an ETag for this resource. Fetch it with the matching show command and pass --etag.`,
+          { exitCode: 6 }
+        )
+    }
+    const idempotencyKey = match.operation.idempotent
+      ? (parsed.flags['idempotency-key'] ?? randomUUID())
+      : null
+    recoveryKey = idempotencyKey
+    const headers = {
+      ...(etag ? { 'If-Match': etag } : {}),
+      ...(idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : {}),
+    }
+    const query = queryFrom(parsed.flags, match.operation)
+    const result = await requestAll(transport, match.operation, {
+      path,
+      body,
+      headers,
+      query,
+      autoPage: !parsed.flags.after,
+      maxItems: positiveIntegerFlag(parsed.flags.limit, 'limit'),
+    })
+    const output = {
+      data: result.data,
+      meta: {
+        request_id: result.requestId,
+        idempotency_key: idempotencyKey,
+        operation_id: match.operation.id,
+      },
+    }
+    renderSuccess(output, parsed.flags, io)
+    return 0
+  } catch (error) {
+    const normalized =
+      error instanceof CliError
+        ? error
+        : new CliError(
+            error instanceof Error ? error.message : 'The command failed.'
+          )
+    normalized.idempotencyKey = recoveryKey
+    renderError(normalized, parseArguments(argv).flags, io)
+    return normalized.exitCode
+  }
+}
+
+function parseArguments(argv) {
+  const flags = {}
+  const words = []
+  for (let index = 0; index < argv.length; index += 1) {
+    const argument = argv[index]
+    if (argument === '-json') {
+      flags.json = true
+      continue
+    }
+    if (!argument.startsWith('-')) {
+      words.push(argument)
+      continue
+    }
+    const raw = argument.replace(/^--?/, '')
+    const [name, inline] = raw.split(/=(.*)/s, 2)
+    if (
+      [
+        'help',
+        'version',
+        'json',
+        'jsonl',
+        'quiet',
+        'yes',
+        'deferred',
+        'dry-run',
+        'with-token',
+        'no-color',
+      ].includes(name)
+    ) {
+      flags[name] = inline === undefined ? true : inline !== 'false'
+      continue
+    }
+    const value = inline ?? argv[++index]
+    if (value === undefined || value.startsWith('--'))
+      throw new CliError(`Flag --${name} requires a value.`, { exitCode: 2 })
+    flags[name] =
+      flags[name] === undefined ? value : [...asArray(flags[name]), value]
+  }
+  return { words, flags }
+}
+
+function matchCommand(words) {
+  for (let length = Math.min(words.length, 5); length > 0; length -= 1) {
+    const command = words.slice(0, length).join(' ')
+    const operation = OPERATION_BY_COMMAND.get(command)
+    if (operation) return { operation, positionals: words.slice(length) }
+  }
+  return null
+}
+
+function fillPath(template, workspace, positionals) {
+  let position = 0
+  return template.replace(/\{([^}]+)\}/g, (_match, name) => {
+    const value = name === 'workspace_id' ? workspace : positionals[position++]
+    if (!value)
+      throw new CliError(`Missing required <${name}> argument.`, {
+        exitCode: 2,
+      })
+    return encodeURIComponent(value)
+  })
+}
+
+async function requestBody(operation, parsed, io) {
+  const flags = parsed.flags
+  let body = flags.file ? await readJsonInput(flags.file, io.stdin) : undefined
+  if (body === undefined && operation.body) body = {}
+  if (body === undefined) return undefined
+
+  if (operation.confirm) body.confirmed = true
+  set(body, 'name', flags.name)
+  set(body, 'time_zone', flags['time-zone'])
+  set(body, 'confirmation', flags.confirmation)
+  set(body, 'email', flags.email)
+  set(body, 'enabled_channels', csv(flags['enabled-channels']))
+  set(body, 'headline', flags.headline)
+  set(body, 'body', flags.body === undefined ? undefined : asArray(flags.body))
+  set(body, 'asset_ids', csv(flags.media))
+  set(body, 'slack_channel_id', nullValue(flags['slack-channel']))
+  set(body, 'destination_id', flags.destination)
+  set(body, 'provider', flags.provider)
+  set(body, 'instance_origin', flags['instance-origin'])
+  set(body, 'enabled', booleanValue(flags.enabled))
+  set(body, 'is_default', booleanValue(flags.default))
+  set(body, 'options', jsonValue(flags.options))
+
+  if (operation.id === 'createPosts' || operation.id === 'validatePosts') {
+    if (!flags.file) {
+      const publish = flags.when !== 'draft'
+      body = {
+        when: flags.when ?? 'now',
+        time_zone: flags['time-zone'] ?? 'UTC',
+        ...(flags.group ? { group: flags.group } : {}),
+        posts: [
+          {
+            ...(publish
+              ? { destination_id: requiredFlag(flags, 'destination') }
+              : { channel: requiredFlag(flags, 'channel') }),
+            headline: flags.headline ?? null,
+            body: asArray(requiredFlag(flags, 'body')),
+            media: csv(flags.media) ?? [],
+            options: jsonValue(flags.options) ?? null,
+          },
+        ],
+      }
+    }
+  }
+  if (operation.id === 'reschedulePost') {
+    body.scheduled_at = requiredFlag(flags, 'at')
+    body.time_zone = requiredFlag(flags, 'time-zone')
+  }
+  return body
+}
+
+function storedTimingBody(parsed) {
+  const flags = parsed.flags
+  return {
+    ...(flags.channel ? { channels: csv(flags.channel) } : {}),
+    timing: flags.at
+      ? {
+          kind: 'scheduled',
+          localDateTime: flags.at,
+          ...(flags['time-zone'] ? { timeZone: flags['time-zone'] } : {}),
+        }
+      : {
+          kind: 'now',
+          ...(flags['time-zone'] ? { timeZone: flags['time-zone'] } : {}),
+        },
+    ...(flags.options ? { options: jsonValue(flags.options) } : {}),
+  }
+}
+
+function etagReadPath(operation, path) {
+  if (operation.ifMatch === 'workspace') return path
+  if (operation.ifMatch === 'destination') return path
+  if (operation.ifMatch === 'post')
+    return path.replace(/\/(cancel|reschedule|retry)$/, '')
+  if (operation.ifMatch === 'post-group')
+    return path.replace(/\/drafts\/[^/]+(?:\/assets\/[^/]+)?$/, '')
+  if (operation.ifMatch === 'post-group-draft')
+    return path.replace(/\/assets\/[^/]+$/, '')
+  return path
+}
+
+async function requestAll(transport, operation, input) {
+  let response = await transport.request({
+    method: operation.method,
+    path: input.path,
+    body: input.body,
+    headers: input.headers,
+    query: input.query,
+  })
+  if (!operation.paginated || !input.autoPage) return response
+  const firstResponse = response
+  const envelope = response.data ?? {}
+  const data = [...(response.data?.data ?? [])]
+  let cursor = response.data?.next_cursor ?? null
+  while (cursor && (!input.maxItems || data.length < input.maxItems)) {
+    const remaining = input.maxItems ? input.maxItems - data.length : null
+    response = await transport.request({
+      method: 'GET',
+      path: input.path,
+      headers: input.headers,
+      query: {
+        ...input.query,
+        after: cursor,
+        ...(remaining === null
+          ? {}
+          : { limit: Math.min(Number(input.query.limit ?? 100), remaining) }),
+      },
+    })
+    data.push(...(response.data?.data ?? []))
+    cursor = response.data?.next_cursor ?? null
+  }
+  return {
+    ...firstResponse,
+    data: {
+      ...envelope,
+      data: input.maxItems ? data.slice(0, input.maxItems) : data,
+      has_more: Boolean(cursor),
+      next_cursor: cursor,
+    },
+  }
+}
+
+async function uploadAsset(transport, workspace, parsed, io) {
+  const filePath = parsed.words[2]
+  if (!filePath)
+    throw new CliError(
+      'Usage: openpmm assets upload <path> --workspace <id>.',
+      { exitCode: 2 }
+    )
+  const metadata = await stat(filePath).catch(() => null)
+  if (!metadata?.isFile())
+    throw new CliError(`Asset file not found: ${filePath}`, { exitCode: 2 })
+  const fileName = basename(filePath)
+  const contentType = parsed.flags['content-type'] ?? contentTypeFor(fileName)
+  const kind = parsed.flags.kind ?? kindFor(fileName)
+  const workflowKey = parsed.flags['idempotency-key'] ?? randomUUID()
+  const beginKey = `${workflowKey}:begin`
+  const begun = await transport.request({
+    method: 'POST',
+    path: `/workspaces/${encodeURIComponent(workspace)}/asset-uploads`,
+    headers: { 'Idempotency-Key': beginKey },
+    body: {
+      kind,
+      file_name: fileName,
+      content_type: contentType,
+      byte_size: metadata.size,
+    },
+  })
+  if (!parsed.flags.quiet && !parsed.flags.json)
+    write(io.stderr, `Uploading ${fileName} (${metadata.size} bytes)...\n`)
+  const rawResponse = await transport.fetchImpl(begun.data.upload_url, {
+    method: 'PUT',
+    headers: {
+      ...begun.data.required_headers,
+      'Content-Length': String(metadata.size),
+      'Content-Range': `bytes 0-${metadata.size - 1}/${metadata.size}`,
+    },
+    body: createReadStream(filePath),
+    duplex: 'half',
+    signal: AbortSignal.timeout(30 * 60_000),
+  })
+  if (!rawResponse.ok)
+    throw new CliError(
+      `The storage upload failed with HTTP ${rawResponse.status}. The upload ID is ${begun.data.id}; inspect it with ‘openpmm asset-uploads show ${begun.data.id}’.`,
+      { code: 'asset_upload_failed', status: rawResponse.status, exitCode: 8 }
+    )
+  const completeKey = `${workflowKey}:complete`
+  const completed = await transport.request({
+    method: 'POST',
+    path: `/workspaces/${encodeURIComponent(workspace)}/asset-uploads/${encodeURIComponent(begun.data.id)}/complete`,
+    headers: { 'Idempotency-Key': completeKey },
+  })
+  renderSuccess(
+    {
+      data: completed.data,
+      meta: {
+        request_id: completed.requestId,
+        idempotency_key: workflowKey,
+        operation_id: 'completeAssetUpload',
+        upload_id: begun.data.id,
+      },
+    },
+    parsed.flags,
+    io
+  )
+  return 0
+}
+
+async function downloadAsset(transport, workspace, parsed, io) {
+  const assetId = parsed.words[2]
+  if (!assetId)
+    throw new CliError(
+      'Usage: openpmm assets download <asset_id> --output <path|-> --workspace <id>.',
+      { exitCode: 2 }
+    )
+  const outputPath = requiredFlag(parsed.flags, 'output')
+  const asset = await transport.request({
+    method: 'GET',
+    path: `/workspaces/${encodeURIComponent(workspace)}/assets/${encodeURIComponent(assetId)}`,
+    query: { include: 'download' },
+  })
+  const response = await transport.fetchImpl(asset.data.download_url, {
+    signal: AbortSignal.timeout(30 * 60_000),
+  })
+  if (!response.ok)
+    throw new CliError(
+      `The asset download failed with HTTP ${response.status}. Request a new download URL and try again.`,
+      {
+        code: 'asset_download_failed',
+        status: response.status,
+        exitCode: 8,
+      }
+    )
+  const bytes = new Uint8Array(await response.arrayBuffer())
+  if (outputPath === '-') io.stdout.write(bytes)
+  else
+    await writeFile(outputPath, bytes, { flag: 'wx' }).catch((error) => {
+      throw new CliError(`Cannot write ${outputPath}: ${error.message}`, {
+        exitCode: 2,
+      })
+    })
+  if (outputPath !== '-' && !parsed.flags.quiet)
+    write(io.stderr, `Downloaded ${assetId} to ${outputPath}.\n`)
+  return 0
+}
+
+function kindFor(fileName) {
+  return ['.mp4', '.mov', '.webm'].includes(extname(fileName).toLowerCase())
+    ? 'reel'
+    : 'card'
+}
+
+function contentTypeFor(fileName) {
+  const extension = extname(fileName).toLowerCase()
+  const contentTypes = {
+    '.gif': 'image/gif',
+    '.jpeg': 'image/jpeg',
+    '.jpg': 'image/jpeg',
+    '.mov': 'video/quicktime',
+    '.mp4': 'video/mp4',
+    '.png': 'image/png',
+    '.webm': 'video/webm',
+    '.webp': 'image/webp',
+  }
+  const value = contentTypes[extension]
+  if (!value)
+    throw new CliError(
+      `Cannot infer a content type for ${fileName}. Pass --content-type.`,
+      { exitCode: 2 }
+    )
+  return value
+}
+
+function queryFrom(flags, operation) {
+  const pageSize = positiveIntegerFlag(
+    flags['page-size'] ?? flags.limit,
+    flags['page-size'] === undefined ? 'limit' : 'page-size'
+  )
+  const names = [
+    ...(operation.paginated ? ['after'] : []),
+    ...(operation.id === 'listPostFeed' ? ['view', 'channel', 'group'] : []),
+    ...(operation.id === 'getAsset' ? ['include'] : []),
+  ]
+  return {
+    ...(operation.paginated && pageSize ? { limit: pageSize } : {}),
+    ...Object.fromEntries(
+      names.flatMap((name) =>
+        flags[name] === undefined ? [] : [[name, flags[name]]]
+      )
+    ),
+  }
+}
+
+async function readJsonInput(path, input) {
+  const text =
+    path === '-' ? await readStream(input) : await readFile(path, 'utf8')
+  try {
+    return JSON.parse(text)
+  } catch {
+    throw new CliError(
+      `Input from ${path === '-' ? 'stdin' : path} is not valid JSON.`,
+      { exitCode: 2 }
+    )
+  }
+}
+
+async function authLogin(parsed, io) {
+  if (!parsed.flags['with-token'])
+    throw new CliError(
+      'Use `openpmm auth login --with-token` and pipe the API key through stdin.',
+      { exitCode: 2 }
+    )
+  const token = (await readStream(io.stdin)).trim()
+  if (!token)
+    throw new CliError('stdin did not contain an API key.', { exitCode: 2 })
+  const baseUrl = normalizeApiBaseUrl(
+    parsed.flags['api-base-url'] ??
+      process.env.OPENPMM_API_BASE_URL ??
+      DEFAULT_API_BASE_URL
+  )
+  const store = await readCredentialStore()
+  store.credentials[baseUrl] = token
+  await writeCredentialStore(store)
+  write(io.stdout, `Saved an API key for ${baseUrl}.\n`)
+  return 0
+}
+
+async function authLogout(parsed, io) {
+  const baseUrl = normalizeApiBaseUrl(
+    parsed.flags['api-base-url'] ??
+      process.env.OPENPMM_API_BASE_URL ??
+      DEFAULT_API_BASE_URL
+  )
+  const store = await readCredentialStore()
+  delete store.credentials[baseUrl]
+  await writeCredentialStore(store)
+  write(io.stdout, `Removed the saved API key for ${baseUrl}.\n`)
+  return 0
+}
+
+async function storedCredential(baseUrl) {
+  return (await readCredentialStore()).credentials[baseUrl] ?? null
+}
+
+async function readCredentialStore() {
+  try {
+    const metadata = await stat(CREDENTIAL_PATH)
+    if (process.platform !== 'win32' && (metadata.mode & 0o077) !== 0)
+      throw new CliError(
+        `Refusing to read ${CREDENTIAL_PATH} because it is accessible by other users. Run \`chmod 600 ${CREDENTIAL_PATH}\` or use OPENPMM_API_KEY.`,
+        { exitCode: 3 }
+      )
+    const parsed = JSON.parse(await readFile(CREDENTIAL_PATH, 'utf8'))
+    return parsed?.version === 1 && parsed.credentials
+      ? parsed
+      : { version: 1, credentials: {} }
+  } catch (error) {
+    if (error instanceof CliError) throw error
+    return { version: 1, credentials: {} }
+  }
+}
+
+async function writeCredentialStore(store) {
+  await mkdir(dirname(CREDENTIAL_PATH), { recursive: true, mode: 0o700 })
+  if (process.platform !== 'win32') await chmod(dirname(CREDENTIAL_PATH), 0o700)
+  const temporary = `${CREDENTIAL_PATH}.${process.pid}.tmp`
+  await writeFile(temporary, `${JSON.stringify(store)}\n`, { mode: 0o600 })
+  await chmod(temporary, 0o600)
+  await rename(temporary, CREDENTIAL_PATH)
+}
+
+function renderSuccess(output, flags, io) {
+  if (flags.quiet) {
+    const value =
+      output.data?.id ??
+      output.data?.draft_id ??
+      output.data?.group ??
+      output.data?.data
+        ?.map((item) => item.id)
+        .filter(Boolean)
+        .join('\n') ??
+      ''
+    return write(io.stdout, `${value}\n`)
+  }
+  if (flags.jsonl) {
+    const values = output.data?.data
+    if (!Array.isArray(values))
+      throw new CliError('--jsonl is available only for list commands.', {
+        exitCode: 2,
+      })
+    for (const value of values) write(io.stdout, `${JSON.stringify(value)}\n`)
+    return
+  }
+  if (flags.json) return write(io.stdout, `${JSON.stringify(output)}\n`)
+  if (Array.isArray(output.data?.data)) {
+    if (output.data.data.length === 0) return write(io.stdout, 'No results.\n')
+    for (const value of output.data.data)
+      write(
+        io.stdout,
+        `${value.id ?? value.name ?? value.object ?? 'result'}${value.name ? `\t${value.name}` : ''}\n`
+      )
+    return
+  }
+  write(io.stdout, `${JSON.stringify(output.data, null, 2)}\n`)
+}
+
+function renderError(error, flags, io) {
+  const payload = {
+    code: error.code,
+    message: error.message,
+    status: error.status,
+    request_id: error.requestId,
+    retryable: error.retryable,
+    details: error.details,
+    idempotency_key: error.idempotencyKey ?? null,
+  }
+  if (flags.json) write(io.stderr, `${JSON.stringify(payload)}\n`)
+  else {
+    write(io.stderr, `Error: ${error.message}\n`)
+    if (error.requestId) write(io.stderr, `Request ID: ${error.requestId}\n`)
+    if (error.idempotencyKey)
+      write(
+        io.stderr,
+        `Recovery key: ${error.idempotencyKey}. Retry with --idempotency-key ${error.idempotencyKey}.\n`
+      )
+  }
+}
+
+function helpFor(command) {
+  if (!command)
+    return `OpenPMM CLI ${VERSION}\n\nUse every OpenPMM customer workflow through the public /v1 API.\n\nCommon path:\n  export OPENPMM_API_KEY=opm_live_...\n  openpmm workspaces list --json\n  openpmm post-groups create launch --workspace ws_... --channel x --body "Draft copy"\n  openpmm post-groups validate launch --workspace ws_...\n  openpmm post-groups publish launch --workspace ws_... --yes\n\nCommands:\n${[
+      ...OPERATIONS.map((operation) => operation.command),
+      'assets download',
+      'assets upload',
+      'post-groups create',
+    ]
+      .sort()
+      .map((value) => `  ${value}`)
+      .join(
+        '\n'
+      )}\n\nGlobal flags:\n  --workspace <id>       Workspace ID (or OPENPMM_WORKSPACE)\n  --api-base-url <url>   Public API origin (or OPENPMM_API_BASE_URL)\n  --file <path|->        Complete JSON request body\n  --json, -json          Stable JSON output\n  --jsonl                One list item per line\n  --limit <count>        Bound total list items\n  --page-size <count>    Control the public API page size\n  --quiet                IDs only\n  --dry-run              Validate create or publish input without writing\n  --yes                  Confirm publishing or destructive work\n  --help                  Show help\n  --version               Show version\n\nRun openpmm <command> --help for command details.\n`
+  const convenienceHelp = {
+    'post-groups create':
+      'openpmm post-groups create [group] --workspace <id> --channel <channel> --body <copy>\n\nCreate a stored draft through POST /v1/workspaces/{workspace_id}/posts. Repeat --body for an X thread.\n',
+    'assets upload':
+      'openpmm assets upload <path> --workspace <id> [--kind card|reel|poster] [--content-type <type>]\n\nCreate an upload session, stream the file to storage, and complete it through public /v1 operations.\n',
+    'assets download':
+      'openpmm assets download <asset_id> --workspace <id> --output <path|->\n\nRequest a short-lived download URL through the public /v1 API, then download the asset. Existing files are not overwritten.\n',
+  }
+  if (convenienceHelp[command]) return convenienceHelp[command]
+  const operation = OPERATION_BY_COMMAND.get(command)
+  if (!operation) return helpFor('')
+  const positional = [...operation.path.matchAll(/\{([^}]+)\}/g)]
+    .map((match) => match[1])
+    .filter((name) => name !== 'workspace_id')
+    .map((name) => `<${name}>`)
+    .join(' ')
+  const confirmation = requiresConfirmation(operation)
+  const sideEffects = operation.confirm
+    ? 'Requires --yes. This can publish, disconnect, or delete data.'
+    : operation.id === 'createPosts'
+      ? 'Requires --yes unless the request creates a draft.'
+      : 'No extra confirmation.'
+  return `${command}\n\n${operationTitle(operation)} through the public API.\nCalls ${operation.method} ${operation.path}.\nRequired scope: ${scopeFor(operation)}\nWorkspace: ${operation.path.includes('{workspace_id}') ? 'required' : 'not required'}\nSide effects: ${sideEffects}\nInput: common flags or --file <request.json>; use --file - for stdin.\nOutput: human by default; --json, -json, --jsonl (lists), or --quiet.\nRelevant exits: 0 success, 2 input, 3 auth, 4 scope, 5 not found, 6 conflict, 7 validation, 8 unavailable, 9 ambiguous, 10 confirmation.\n\nExample:\n  openpmm ${command} ${positional} ${operation.path.includes('{workspace_id}') ? '--workspace ws_01JABCDEF ' : ''}${operation.body ? '--file request.json ' : ''}${confirmation ? '--yes ' : ''}--json\n`
+}
+
+function requiresConfirmation(operation) {
+  return operation.confirm || operation.id === 'createPosts'
+}
+
+function operationTitle(operation) {
+  const words = operation.id
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .toLowerCase()
+  return words[0].toUpperCase() + words.slice(1)
+}
+
+function scopeFor(operation) {
+  if (['getMe', 'getAccount'].includes(operation.id)) return 'none'
+  if (operation.path.startsWith('/account/'))
+    return operation.method === 'GET' ? 'team:read' : 'team:write'
+  if (
+    operation.path === '/workspaces' ||
+    /^\/workspaces\/\{workspace_id\}$/.test(operation.path)
+  )
+    return operation.method === 'GET' ? 'workspaces:read' : 'workspaces:write'
+  if (
+    operation.path.includes('notification') ||
+    operation.path.includes('slack')
+  )
+    return operation.method === 'GET'
+      ? 'notifications:read'
+      : 'notifications:write'
+  if (operation.path.includes('asset'))
+    return operation.method === 'GET' ? 'assets:read' : 'assets:write'
+  if (
+    operation.path.includes('destination') ||
+    operation.path.includes('connection') ||
+    operation.path.includes('facebook-page')
+  )
+    return operation.method === 'GET'
+      ? 'destinations:read'
+      : 'destinations:write'
+  if (
+    operation.path.includes('post-groups') &&
+    !operation.path.endsWith('/posts') &&
+    !operation.path.includes('post-validations')
+  )
+    return operation.method === 'GET' ? 'post_groups:read' : 'post_groups:write'
+  return operation.method === 'GET' ? 'posts:read' : 'posts:write'
+}
+
+function set(object, key, value) {
+  if (value !== undefined) object[key] = value
+}
+function asArray(value) {
+  return Array.isArray(value) ? value : [value]
+}
+function csv(value) {
+  return value === undefined
+    ? undefined
+    : asArray(value)
+        .flatMap((item) => String(item).split(','))
+        .map((item) => item.trim())
+        .filter(Boolean)
+}
+function nullValue(value) {
+  return value === undefined
+    ? undefined
+    : value === 'null' || value === 'none'
+      ? null
+      : value
+}
+function booleanValue(value) {
+  return value === undefined
+    ? undefined
+    : !['false', '0', 'no'].includes(String(value).toLowerCase())
+}
+function jsonValue(value) {
+  if (value === undefined) return undefined
+  try {
+    return JSON.parse(value)
+  } catch {
+    throw new CliError('Expected valid JSON.', { exitCode: 2 })
+  }
+}
+function requiredFlag(flags, name) {
+  if (flags[name] === undefined)
+    throw new CliError(`This command requires --${name}.`, { exitCode: 2 })
+  return flags[name]
+}
+function positiveIntegerFlag(value, name) {
+  if (value === undefined) return undefined
+  const number = Number(value)
+  if (!Number.isInteger(number) || number < 1)
+    throw new CliError(`Flag --${name} must be a positive integer.`, {
+      exitCode: 2,
+    })
+  return number
+}
+function write(stream, value) {
+  stream.write(value)
+  return 0
+}
+async function readStream(stream) {
+  const chunks = []
+  for await (const chunk of stream) chunks.push(Buffer.from(chunk))
+  return Buffer.concat(chunks).toString('utf8')
+}
+
+if (import.meta.url === `file://${process.argv[1]}`) {
+  process.exitCode = await run()
+}
