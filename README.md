@@ -63,10 +63,10 @@ export OPENPMM_API_KEY=opm_live_...
 export OPENPMM_WORKSPACE=ws_...
 
 # Inspect the workspace as machine-readable JSON.
-openpmm workspaces list --json
+npx -y @openpmm/cli workspaces list --json
 
 # Create a draft post.
-openpmm posts create \
+npx -y @openpmm/cli posts create \
   --workspace "$OPENPMM_WORKSPACE" \
   --when draft \
   --group launch \
@@ -75,7 +75,7 @@ openpmm posts create \
   --json
 
 # List drafts.
-openpmm posts list \
+npx -y @openpmm/cli posts list \
   --workspace "$OPENPMM_WORKSPACE" \
   --view drafts \
   --json
