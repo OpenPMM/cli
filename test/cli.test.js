@@ -71,14 +71,14 @@ test('transport sends clean public API requests and parses request IDs', async (
   assert.equal(result.requestId, 'req_1')
 })
 
-test('video validation sends destination IDs through the public API', async () => {
+test('media validation sends destination IDs through the public API', async () => {
   let seen
   const stdout = output()
   await withApiKey(async () => {
     const exitCode = await run(
       [
         'assets',
-        'validate-video',
+        'validate',
         'asset_1',
         '--workspace',
         'ws_1',
@@ -94,7 +94,8 @@ test('video validation sends destination IDs through the public API', async () =
           seen = { url: String(url), body: JSON.parse(init.body) }
           return new Response(
             JSON.stringify({
-              object: 'video_validation',
+              object: 'media_validation',
+              media_kind: 'image',
               asset_id: 'asset_1',
               metadata_version: 1,
               status: 'compatible_original',
@@ -109,10 +110,10 @@ test('video validation sends destination IDs through the public API', async () =
   })
   assert.equal(
     seen.url,
-    'https://api.openpmm.com/v1/workspaces/ws_1/assets/asset_1/video-validations'
+    'https://api.openpmm.com/v1/workspaces/ws_1/assets/asset_1/validations'
   )
   assert.deepEqual(seen.body, { destination_ids: ['dst_1', 'dst_2'] })
-  assert.match(stdout.read(), /"video_validation"/)
+  assert.match(stdout.read(), /"media_validation"/)
 })
 
 test('Bluesky connection sends the account identifier', async () => {
