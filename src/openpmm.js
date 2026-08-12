@@ -254,7 +254,7 @@ async function requestBody(operation, parsed, io) {
   set(body, 'body', flags.body === undefined ? undefined : asArray(flags.body))
   set(body, 'asset_ids', csv(flags.media))
   set(body, 'slack_channel_id', nullValue(flags['slack-channel']))
-  if (operation.id === 'validateVideoAsset') {
+  if (operation.id === 'validateAsset' || operation.id === 'convertAsset') {
     set(body, 'destination_ids', csv(flags.destination))
     set(body, 'channels', csv(flags.channel))
   } else set(body, 'destination_id', flags.destination)
@@ -805,7 +805,7 @@ function scopeFor(operation) {
   if (operation.path.includes('webhook-endpoints'))
     return operation.method === 'GET' ? 'webhooks:read' : 'webhooks:write'
   if (operation.path.includes('asset'))
-    return operation.id === 'validateVideoAsset' || operation.method === 'GET'
+    return operation.id === 'validateAsset' || operation.method === 'GET'
       ? 'assets:read'
       : 'assets:write'
   if (

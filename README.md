@@ -165,7 +165,7 @@ signing secret is stored outside the environment.
 | Account and workspaces | `accounts show`, `workspaces list`, `workspaces create` |
 | Team | `team members list`, `team invitations create` |
 | Posts | `posts create`, `posts list`, `posts update`, `posts publish` |
-| Assets | `assets list`, `assets upload`, `assets validate-video`, `assets download` |
+| Assets | `assets list`, `assets upload`, `assets validate`, `assets convert`, `assets download` |
 | Destinations | `destinations list`, `destinations connect`, `destinations refresh`, `destinations disconnect` |
 | Notifications | `slack show`, `slack update`, `slack channels`, `slack test` |
 | Webhooks | `webhooks list`, `webhooks create`, `webhooks rotate-secret`, `webhooks verify` |
