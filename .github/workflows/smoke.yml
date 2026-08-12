@@ -1,0 +1,72 @@
+name: Smoke OpenPMM CLI
+
+on:
+  workflow_dispatch:
+    inputs:
+      cli_version:
+        description: Published @openpmm/cli version
+        required: true
+        type: string
+      workspace_id:
+        description: Designated staging Workspace public ID
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    name: Public API smoke
+    runs-on: ubuntu-latest
+    environment: staging-cli-smoke
+    env:
+      OPENPMM_API_BASE_URL: ${{ vars.OPENPMM_STAGING_API_BASE_URL }}
+      OPENPMM_API_KEY: ${{ secrets.OPENPMM_CLI_SMOKE_API_KEY }}
+      OPENPMM_WORKSPACE: ${{ inputs.workspace_id }}
+      CLI_VERSION: ${{ inputs.cli_version }}
+    steps:
+      - name: Set up Node.js
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: '22'
+
+      - name: Validate inputs
+        shell: bash
+        run: |
+          [[ "$CLI_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?$ ]]
+          [[ "$OPENPMM_WORKSPACE" =~ ^ws_[0-9A-Za-z-]+$ ]]
+          [[ "$OPENPMM_API_BASE_URL" == https://* ]]
+
+      - name: Exercise read-only operation families
+        shell: bash
+        run: |
+          cli() { npx -y "@openpmm/cli@$CLI_VERSION" "$@"; }
+          cli auth status --json
+          cli workspaces list --limit 1 --json
+          cli assets list --limit 1 --json
+          cli post-groups list --limit 1 --json
+          cli posts feed --limit 1 --json
+          cli posts list --limit 1 --json
+          cli destinations list --json
+          cli connections list --json
+          cli notifications show --json
+          cli team members list --json
+          cli team invitations list --json
+          cli webhooks list --json
+
+      - name: Exercise reversible draft lifecycle
+        shell: bash
+        run: |
+          cli() { npx -y "@openpmm/cli@$CLI_VERSION" "$@"; }
+          group="cli-smoke-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          cleanup() {
+            cli post-groups delete "$group" --yes --json || true
+          }
+          trap cleanup EXIT
+          cli post-groups create "$group" --channel x --body 'CLI smoke draft' --json
+          cli post-groups drafts update "$group" x --body 'CLI smoke draft updated' --json
+          cli post-groups show "$group" --json
+          cli post-groups drafts list "$group" --jsonl
+          cli post-groups delete "$group" --yes --json
+          trap - EXIT
