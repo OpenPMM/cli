@@ -298,7 +298,10 @@ async function requestBody(operation, parsed, io) {
   set(body, 'body', flags.body === undefined ? undefined : asArray(flags.body))
   set(body, 'asset_ids', csv(flags.media))
   set(body, 'slack_channel_id', nullValue(flags['slack-channel']))
-  set(body, 'destination_id', flags.destination)
+  if (operation.id === 'validateVideoAsset') {
+    set(body, 'destination_ids', csv(flags.destination))
+    set(body, 'channels', csv(flags.channel))
+  } else set(body, 'destination_id', flags.destination)
   set(body, 'provider', flags.provider)
   set(body, 'instance_origin', flags['instance-origin'])
   set(body, 'enabled', booleanValue(flags.enabled))
@@ -845,7 +848,9 @@ function scopeFor(operation) {
   if (operation.path.includes('webhook-endpoints'))
     return operation.method === 'GET' ? 'webhooks:read' : 'webhooks:write'
   if (operation.path.includes('asset'))
-    return operation.method === 'GET' ? 'assets:read' : 'assets:write'
+    return operation.id === 'validateVideoAsset' || operation.method === 'GET'
+      ? 'assets:read'
+      : 'assets:write'
   if (
     operation.path.includes('destination') ||
     operation.path.includes('connection') ||

@@ -72,6 +72,13 @@ export const OPERATIONS = [
     '/workspaces/{workspace_id}/assets/{asset_id}'
   ),
   op(
+    'validateVideoAsset',
+    'assets validate-video',
+    'POST',
+    '/workspaces/{workspace_id}/assets/{asset_id}/video-validations',
+    { body: true }
+  ),
+  op(
     'deleteAsset',
     'assets delete',
     'DELETE',
