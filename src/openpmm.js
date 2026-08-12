@@ -46,27 +46,11 @@ export async function run(
     if (special === 'webhooks verify')
       return await verifyWebhookSignature(parsed, io)
 
-    if (special === 'post-groups create') {
-      if (parsed.words.length > 3)
-        throw new CliError(
-          'Usage: openpmm post-groups create [group] --channel <channel> --body <copy>.',
-          { exitCode: 2 }
-        )
-      parsed.flags.when = 'draft'
-      if (parsed.words[2]) parsed.flags.group = parsed.words[2]
-      parsed.words = ['posts', 'create']
-    }
-
     if (parsed.flags['dry-run']) {
-      const command = parsed.words.slice(0, 2).join(' ')
-      if (command === 'posts create') parsed.words = ['posts', 'validate']
-      else if (command === 'post-groups publish')
-        parsed.words = ['post-groups', 'validate', ...parsed.words.slice(2)]
-      else
-        throw new CliError(
-          '--dry-run is available for `posts create` and `post-groups publish`.',
-          { exitCode: 2 }
-        )
+      throw new CliError(
+        'The public API has no validation-only operation. Remove --dry-run.',
+        { exitCode: 2 }
+      )
     }
 
     const assetWorkflow = ['assets upload', 'assets download'].includes(special)
@@ -141,34 +125,6 @@ export async function run(
         )
       body.confirmed = true
     }
-
-    if (match.operation.id === 'publishPostGroup' && !parsed.flags.file) {
-      if (parsed.flags.deferred) {
-        body = {
-          ...storedTimingBody(parsed),
-          confirmed: true,
-          validation: 'deferred',
-        }
-      } else {
-        const validation = await transport.request({
-          method: 'POST',
-          path: path.replace(/\/posts$/, '/post-validations'),
-          body: storedTimingBody(parsed),
-        })
-        body = {
-          ...storedTimingBody(parsed),
-          confirmed: true,
-          validation: 'synchronous',
-          destinationIds: validation.data.deliveries.map((delivery) => ({
-            channel: delivery.channel,
-            destinationId: delivery.destination_id,
-          })),
-          preflightHash: validation.data.request_hash,
-        }
-      }
-    }
-    if (match.operation.id === 'validatePostGroup' && !parsed.flags.file)
-      body = storedTimingBody(parsed)
 
     if (match.operation.ifMatch && !etag) {
       const readPath = etagReadPath(match.operation, path)
@@ -313,7 +269,7 @@ async function requestBody(operation, parsed, io) {
   set(body, 'destination_ids', csv(flags.destinations))
   set(body, 'content_mode', flags['content-mode'])
 
-  if (operation.id === 'createPosts' || operation.id === 'validatePosts') {
+  if (operation.id === 'createPosts') {
     if (!flags.file) {
       const publish = flags.when !== 'draft'
       body = {
@@ -334,29 +290,30 @@ async function requestBody(operation, parsed, io) {
       }
     }
   }
+  if (operation.id === 'publishPosts' && !flags.file) {
+    const version = Number(requiredFlag(flags, 'post-version'))
+    if (!Number.isSafeInteger(version) || version < 1)
+      throw new CliError('--post-version must be a positive integer.', {
+        exitCode: 2,
+      })
+    body = {
+      confirmed: true,
+      when: flags.at ?? 'now',
+      time_zone: flags['time-zone'] ?? 'UTC',
+      posts: [
+        {
+          id: requiredFlag(flags, 'post'),
+          version,
+          destination_id: requiredFlag(flags, 'destination'),
+        },
+      ],
+    }
+  }
   if (operation.id === 'reschedulePost') {
     body.scheduled_at = requiredFlag(flags, 'at')
     body.time_zone = requiredFlag(flags, 'time-zone')
   }
   return body
-}
-
-function storedTimingBody(parsed) {
-  const flags = parsed.flags
-  return {
-    ...(flags.channel ? { channels: csv(flags.channel) } : {}),
-    timing: flags.at
-      ? {
-          kind: 'scheduled',
-          localDateTime: flags.at,
-          ...(flags['time-zone'] ? { timeZone: flags['time-zone'] } : {}),
-        }
-      : {
-          kind: 'now',
-          ...(flags['time-zone'] ? { timeZone: flags['time-zone'] } : {}),
-        },
-    ...(flags.options ? { options: jsonValue(flags.options) } : {}),
-  }
 }
 
 function etagReadPath(operation, path) {
@@ -365,10 +322,6 @@ function etagReadPath(operation, path) {
   if (operation.ifMatch === 'webhook-endpoint') return path
   if (operation.ifMatch === 'post')
     return path.replace(/\/(cancel|reschedule|retry)$/, '')
-  if (operation.ifMatch === 'post-group')
-    return path.replace(/\/drafts\/[^/]+(?:\/assets\/[^/]+)?$/, '')
-  if (operation.ifMatch === 'post-group-draft')
-    return path.replace(/\/assets\/[^/]+$/, '')
   return path
 }
 
@@ -551,7 +504,7 @@ function queryFrom(flags, operation) {
   )
   const names = [
     ...(operation.paginated ? ['after'] : []),
-    ...(operation.id === 'listPostFeed' ? ['view', 'channel', 'group'] : []),
+    ...(operation.id === 'listPosts' ? ['view', 'channel', 'group'] : []),
     ...(operation.id === 'getAsset' ? ['include'] : []),
   ]
   return {
@@ -779,21 +732,18 @@ function renderError(error, flags, io) {
 
 function helpFor(command) {
   if (!command)
-    return `OpenPMM CLI ${VERSION}\n\nUse every OpenPMM customer workflow through the public /v1 API.\n\nCommon path:\n  export OPENPMM_API_KEY=opm_live_...\n  openpmm workspaces list --json\n  openpmm post-groups create launch --workspace ws_... --channel x --body "Draft copy"\n  openpmm post-groups validate launch --workspace ws_...\n  openpmm post-groups publish launch --workspace ws_... --yes\n\nCommands:\n${[
+    return `OpenPMM CLI ${VERSION}\n\nUse every OpenPMM customer workflow through the public /v1 API.\n\nCommon path:\n  export OPENPMM_API_KEY=opm_live_...\n  openpmm workspaces list --json\n  openpmm posts create --workspace ws_... --when draft --channel x --body "Draft copy"\n  openpmm posts list --workspace ws_... --view drafts --json\n  openpmm posts publish --workspace ws_... --post post_... --post-version 1 --destination dst_... --yes\n\nCommands:\n${[
       ...OPERATIONS.map((operation) => operation.command),
       'assets download',
       'assets upload',
-      'post-groups create',
       'webhooks verify',
     ]
       .sort()
       .map((value) => `  ${value}`)
       .join(
         '\n'
-      )}\n\nGlobal flags:\n  --workspace <id>       Workspace ID (or OPENPMM_WORKSPACE)\n  --api-base-url <url>   Public API origin (or OPENPMM_API_BASE_URL)\n  --file <path|->        Complete JSON request body\n  --json, -json          Stable JSON output\n  --jsonl                One list item per line\n  --limit <count>        Bound total list items\n  --page-size <count>    Control the public API page size\n  --quiet                IDs only\n  --dry-run              Validate create or publish input without writing\n  --yes                  Confirm publishing or destructive work\n  --help                  Show help\n  --version               Show version\n\nRun openpmm <command> --help for command details.\n`
+      )}\n\nGlobal flags:\n  --workspace <id>       Workspace ID (or OPENPMM_WORKSPACE)\n  --api-base-url <url>   Public API origin (or OPENPMM_API_BASE_URL)\n  --file <path|->        Complete JSON request body\n  --json, -json          Stable JSON output\n  --jsonl                One list item per line\n  --limit <count>        Bound total list items\n  --page-size <count>    Control the public API page size\n  --quiet                IDs only\n  --yes                  Confirm publishing or destructive work\n  --help                  Show help\n  --version               Show version\n\nRun openpmm <command> --help for command details.\n`
   const convenienceHelp = {
-    'post-groups create':
-      'openpmm post-groups create [group] --workspace <id> --channel <channel> --body <copy>\n\nCreate a stored draft through POST /v1/workspaces/{workspace_id}/posts. Repeat --body for an X thread.\n',
     'assets upload':
       'openpmm assets upload <path> --workspace <id> [--kind card|reel|poster] [--content-type <type>]\n\nCreate an upload session, stream the file to storage, and complete it through public /v1 operations.\n',
     'assets download':
@@ -815,7 +765,11 @@ function helpFor(command) {
     : operation.id === 'createPosts'
       ? 'Requires --yes unless the request creates a draft.'
       : 'No extra confirmation.'
-  return `${command}\n\n${operationTitle(operation)} through the public API.\nCalls ${operation.method} ${operation.path}.\nRequired scope: ${scopeFor(operation)}\nWorkspace: ${operation.path.includes('{workspace_id}') ? 'required' : 'not required'}\nSide effects: ${sideEffects}\nInput: common flags or --file <request.json>; use --file - for stdin.\nOutput: human by default; --json, -json, --jsonl (lists), or --quiet.\nRelevant exits: 0 success, 2 input, 3 auth, 4 scope, 5 not found, 6 conflict, 7 validation, 8 unavailable, 9 ambiguous, 10 confirmation.\n\nExample:\n  openpmm ${command} ${positional} ${operation.path.includes('{workspace_id}') ? '--workspace ws_01JABCDEF ' : ''}${operation.body ? '--file request.json ' : ''}${confirmation ? '--yes ' : ''}--json\n`
+  const inputNote =
+    operation.id === 'publishPosts'
+      ? ' Include every draft Post in the group.'
+      : ''
+  return `${command}\n\n${operationTitle(operation)} through the public API.\nCalls ${operation.method} ${operation.path}.\nRequired scope: ${scopeFor(operation)}\nWorkspace: ${operation.path.includes('{workspace_id}') ? 'required' : 'not required'}\nSide effects: ${sideEffects}\nInput: common flags or --file <request.json>; use --file - for stdin.${inputNote}\nOutput: human by default; --json, -json, --jsonl (lists), or --quiet.\nRelevant exits: 0 success, 2 input, 3 auth, 4 scope, 5 not found, 6 conflict, 7 validation, 8 unavailable, 9 ambiguous, 10 confirmation.\n\nExample:\n  openpmm ${command} ${positional} ${operation.path.includes('{workspace_id}') ? '--workspace ws_01JABCDEF ' : ''}${operation.body ? '--file request.json ' : ''}${confirmation ? '--yes ' : ''}--json\n`
 }
 
 function requiresConfirmation(operation) {
@@ -830,7 +784,7 @@ function operationTitle(operation) {
 }
 
 function scopeFor(operation) {
-  if (['getMe', 'getAccount'].includes(operation.id)) return 'none'
+  if (operation.id === 'getAccount') return 'none'
   if (operation.path.startsWith('/account/'))
     return operation.method === 'GET' ? 'team:read' : 'team:write'
   if (
@@ -853,18 +807,11 @@ function scopeFor(operation) {
       : 'assets:write'
   if (
     operation.path.includes('destination') ||
-    operation.path.includes('connection') ||
-    operation.path.includes('facebook-page')
+    operation.path.includes('connection')
   )
     return operation.method === 'GET'
       ? 'destinations:read'
       : 'destinations:write'
-  if (
-    operation.path.includes('post-groups') &&
-    !operation.path.endsWith('/posts') &&
-    !operation.path.includes('post-validations')
-  )
-    return operation.method === 'GET' ? 'post_groups:read' : 'post_groups:write'
   return operation.method === 'GET' ? 'posts:read' : 'posts:write'
 }
 
