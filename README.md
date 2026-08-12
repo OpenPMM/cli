@@ -57,6 +57,6 @@ npm test
 npm run pack
 ```
 
-The release workflow also compares the command registry with the production
-OpenAPI document. See [CONTRIBUTING.md](CONTRIBUTING.md) before you open a pull
-request.
+The release workflow also compares every operation and command name with the
+production OpenAPI document. See [CONTRIBUTING.md](CONTRIBUTING.md) before you
+open a pull request.

@@ -11,7 +11,7 @@ npm test
 npm run pack
 ```
 
-To compare the CLI operation registry with a deployed OpenPMM API:
+To compare the CLI operation and command registry with a deployed OpenPMM API:
 
 ```bash
 npm run check:api-coverage -- https://api.openpmm.com/v1/openapi.json
