@@ -7,3 +7,5 @@
 - Added stable JSON, JSONL, quiet output, actionable errors, and exit codes.
 - Added explicit confirmation, ETag handling, idempotency, pagination, and safe
   retries.
+- Added workspace webhook management, one-time signing-secret rotation, test
+  delivery, and local exact-byte signature verification.
