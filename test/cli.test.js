@@ -120,7 +120,14 @@ test('a destructive command exits 10 before making a request', async () => {
   const err = output()
   let calls = 0
   const exitCode = await run(
-    ['connections', 'disconnect', 'con_42', '--workspace', 'ws_1', '--json'],
+    [
+      'destinations',
+      'disconnect',
+      'dst_42',
+      '--workspace',
+      'ws_1',
+      '--json',
+    ],
     { stdin: process.stdin, stdout: out.stream, stderr: err.stream },
     {
       fetchImpl: async () => {
@@ -394,20 +401,18 @@ test('direct publishing sends confirmation after --yes', async () => {
   assert.equal(body.confirmed, true)
 })
 
-test('attaching a draft asset is reversible and does not require --yes', async () => {
+test('updating a draft Post is reversible and does not require --yes', async () => {
   const methods = []
   await withApiKey(async () => {
     const exitCode = await run(
       [
-        'post-groups',
-        'drafts',
-        'assets',
-        'attach',
-        'launch',
-        'x',
-        'ast_1',
+        'posts',
+        'update',
+        'post_1',
         '--workspace',
         'ws_1',
+        '--body',
+        'Updated copy',
         '--json',
       ],
       {
@@ -419,13 +424,13 @@ test('attaching a draft asset is reversible and does not require --yes', async (
         fetchImpl: async (_url, init) => {
           methods.push(init.method)
           return init.method === 'GET'
-            ? new Response(JSON.stringify({ object: 'post_group_draft' }), {
+              ? new Response(JSON.stringify({ object: 'post' }), {
                 headers: {
                   'content-type': 'application/json',
-                  etag: '"post-group-draft:launch:x:1"',
+                  etag: '"post:post_1:1"',
                 },
               })
-            : new Response(JSON.stringify({ object: 'post_group_draft' }), {
+            : new Response(JSON.stringify({ object: 'post' }), {
                 headers: { 'content-type': 'application/json' },
               })
         },
@@ -433,7 +438,7 @@ test('attaching a draft asset is reversible and does not require --yes', async (
     )
     assert.equal(exitCode, 0)
   })
-  assert.deepEqual(methods, ['GET', 'PUT'])
+  assert.deepEqual(methods, ['GET', 'PATCH'])
 })
 
 test('JSON output stays on stdout and diagnostics stay on stderr', async () => {
@@ -468,19 +473,22 @@ test('JSON output stays on stdout and diagnostics stay on stderr', async () => {
   })
 })
 
-test('post-groups create composes the public draft operation', async () => {
+test('posts create composes the public draft operation', async () => {
   let request
   const out = output()
   await withApiKey(async () => {
     const exitCode = await run(
       [
-        'post-groups',
+        'posts',
         'create',
-        'launch',
         '--workspace',
         'ws_1',
         '--channel',
         'x',
+        '--when',
+        'draft',
+        '--group',
+        'launch',
         '--body',
         'Draft copy',
         '--json',
@@ -504,11 +512,24 @@ test('post-groups create composes the public draft operation', async () => {
   assert.equal(request.body.posts[0].channel, 'x')
 })
 
-test('stored draft validation defaults to immediate timing', async () => {
+test('posts publish composes a same-Post publication request', async () => {
   let body
   await withApiKey(async () => {
     const exitCode = await run(
-      ['post-groups', 'validate', 'launch', '--workspace', 'ws_1', '--json'],
+      [
+        'posts',
+        'publish',
+        '--workspace',
+        'ws_1',
+        '--post',
+        'post_1',
+        '--post-version',
+        '3',
+        '--destination',
+        'dst_1',
+        '--yes',
+        '--json',
+      ],
       {
         stdin: process.stdin,
         stdout: output().stream,
@@ -517,7 +538,7 @@ test('stored draft validation defaults to immediate timing', async () => {
       {
         fetchImpl: async (_url, init) => {
           body = JSON.parse(init.body)
-          return new Response(JSON.stringify({ deliveries: [] }), {
+          return new Response(JSON.stringify({ posts: [] }), {
             headers: { 'content-type': 'application/json' },
           })
         },
@@ -525,46 +546,45 @@ test('stored draft validation defaults to immediate timing', async () => {
     )
     assert.equal(exitCode, 0)
   })
-  assert.deepEqual(body, { timing: { kind: 'now' } })
+  assert.deepEqual(body, {
+    confirmed: true,
+    when: 'now',
+    time_zone: 'UTC',
+    posts: [{ id: 'post_1', version: 3, destination_id: 'dst_1' }],
+  })
 })
 
-test('--dry-run changes stored publication into public validation without confirmation', async () => {
-  let request
-  const out = output()
+test('--dry-run explains that validation-only publication was removed', async () => {
+  let calls = 0
   await withApiKey(async () => {
     const exitCode = await run(
       [
-        'post-groups',
-        'publish',
-        'launch',
+        'posts',
+        'create',
         '--workspace',
         'ws_1',
         '--dry-run',
         '--json',
       ],
-      { stdin: process.stdin, stdout: out.stream, stderr: output().stream },
+      { stdin: process.stdin, stdout: output().stream, stderr: output().stream },
       {
-        fetchImpl: async (url, init) => {
-          request = { url: String(url), method: init.method }
-          return new Response(JSON.stringify({ deliveries: [] }), {
-            headers: { 'content-type': 'application/json' },
-          })
+        fetchImpl: async () => {
+          calls += 1
+          return new Response()
         },
       }
     )
-    assert.equal(exitCode, 0)
+    assert.equal(exitCode, 2)
   })
-  assert.match(request.url, /\/post-validations$/)
-  assert.equal(request.method, 'POST')
-  assert.equal(JSON.parse(out.read()).meta.operation_id, 'validatePostGroup')
+  assert.equal(calls, 0)
 })
 
-test('auto-pagination preserves feed metadata from the first page', async () => {
+test('auto-pagination preserves list metadata from the first page', async () => {
   let calls = 0
   const out = output()
   await withApiKey(async () => {
     const exitCode = await run(
-      ['posts', 'feed', '--workspace', 'ws_1', '--json'],
+      ['posts', 'list', '--workspace', 'ws_1', '--json'],
       { stdin: process.stdin, stdout: out.stream, stderr: output().stream },
       {
         fetchImpl: async () => {

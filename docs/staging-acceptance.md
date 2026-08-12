@@ -18,14 +18,13 @@ exact command and grant the GitHub Environment approval:
 
 - Upload an approved fixture. Attach it to one channel draft. Download and
   remove it.
-- Validate, schedule, observe, reschedule, cancel, and inspect attempts and
-  receipts for a stored post group.
+- Create a draft Post, publish the same Post ID, schedule it, observe it,
+  reschedule it, cancel it, and inspect its embedded delivery status.
 - Publish an approved immediate fixture and inspect its receipts.
 - Initiate each configured provider connection and observe its session.
-- Refresh provider connections. Disconnect only the designated disposable
-  connection.
-- Select the staging Slack channel. Send the confirmed test. Inspect its
-  notification record. Disconnect the disposable Slack installation.
+- Refresh destinations. Disconnect only the designated disposable destination.
+- Select the staging Slack channel. Send the confirmed test. Confirm the CLI
+  returns the Slack message timestamp. Disconnect the disposable installation.
 - Validate YouTube readiness. Publish the approved private test video.
 - Create, update, and delete a disposable Workspace with the exact deletion
   confirmation.

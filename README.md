@@ -21,7 +21,7 @@ Node.js 22 or newer is required.
 ```bash
 export OPENPMM_API_KEY=opm_live_...
 npx -y @openpmm/cli workspaces list --json
-npx -y @openpmm/cli post-groups create launch --workspace ws_... --channel x --body 'Draft copy'
+npx -y @openpmm/cli posts create --workspace ws_... --when draft --group launch --channel x --body 'Draft copy'
 npx -y @openpmm/cli webhooks list --workspace ws_... --json
 ```
 

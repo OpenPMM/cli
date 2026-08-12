@@ -16,7 +16,7 @@ function output() {
 
 test('publishing help is a stable, copy-pasteable public contract', async () => {
   const stdout = output()
-  const exitCode = await run(['post-groups', 'publish', '--help'], {
+  const exitCode = await run(['posts', 'publish', '--help'], {
     stdin: process.stdin,
     stdout: stdout.stream,
     stderr: output().stream,
@@ -25,19 +25,19 @@ test('publishing help is a stable, copy-pasteable public contract', async () => 
   assert.equal(exitCode, 0)
   assert.equal(
     stdout.read(),
-    `post-groups publish
+    `posts publish
 
-Publish post group through the public API.
-Calls POST /workspaces/{workspace_id}/post-groups/{group}/posts.
+Publish posts through the public API.
+Calls POST /workspaces/{workspace_id}/posts/publish.
 Required scope: posts:write
 Workspace: required
 Side effects: Requires --yes. This can publish, disconnect, or delete data.
-Input: common flags or --file <request.json>; use --file - for stdin.
+Input: common flags or --file <request.json>; use --file - for stdin. Include every draft Post in the group.
 Output: human by default; --json, -json, --jsonl (lists), or --quiet.
 Relevant exits: 0 success, 2 input, 3 auth, 4 scope, 5 not found, 6 conflict, 7 validation, 8 unavailable, 9 ambiguous, 10 confirmation.
 
 Example:
-  openpmm post-groups publish <group> --workspace ws_01JABCDEF --file request.json --yes --json
+  openpmm posts publish  --workspace ws_01JABCDEF --file request.json --yes --json
 `
   )
 })
