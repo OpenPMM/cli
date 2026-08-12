@@ -115,6 +115,47 @@ test('video validation sends destination IDs through the public API', async () =
   assert.match(stdout.read(), /"video_validation"/)
 })
 
+test('Bluesky connection sends the account identifier', async () => {
+  let seen
+  await withApiKey(async () => {
+    const exitCode = await run(
+      [
+        'destinations',
+        'connect',
+        '--workspace',
+        'ws_1',
+        '--provider',
+        'bluesky',
+        '--account',
+        'alice.bsky.social',
+        '--json',
+      ],
+      { stdin: process.stdin, stdout: output().stream, stderr: output().stream },
+      {
+        fetchImpl: async (url, init) => {
+          seen = { url: String(url), body: JSON.parse(init.body) }
+          return new Response(
+            JSON.stringify({
+              id: 'dcs_1',
+              object: 'destination_connection_session',
+              provider: 'bluesky',
+              status: 'pending',
+              authorization_url: 'https://app.openpmm.com/authorize',
+            }),
+            { status: 201, headers: { 'content-type': 'application/json' } }
+          )
+        },
+      }
+    )
+    assert.equal(exitCode, 0)
+  })
+  assert.match(seen.url, /destination-connection-sessions$/)
+  assert.deepEqual(seen.body, {
+    provider: 'bluesky',
+    account_identifier: 'alice.bsky.social',
+  })
+})
+
 test('a destructive command exits 10 before making a request', async () => {
   const out = output()
   const err = output()
