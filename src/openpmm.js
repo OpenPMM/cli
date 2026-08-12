@@ -260,6 +260,7 @@ async function requestBody(operation, parsed, io) {
   } else set(body, 'destination_id', flags.destination)
   set(body, 'provider', flags.provider)
   set(body, 'instance_origin', flags['instance-origin'])
+  set(body, 'account_identifier', flags.account)
   set(body, 'enabled', booleanValue(flags.enabled))
   set(body, 'is_default', booleanValue(flags.default))
   set(body, 'options', jsonValue(flags.options))
@@ -768,6 +769,8 @@ function helpFor(command) {
   const inputNote =
     operation.id === 'publishPosts'
       ? ' Include every draft Post in the group.'
+      : operation.id === 'createDestinationConnectionSession'
+        ? ' Bluesky requires --account <handle-or-did>. Mastodon requires --instance-origin <url>.'
       : ''
   return `${command}\n\n${operationTitle(operation)} through the public API.\nCalls ${operation.method} ${operation.path}.\nRequired scope: ${scopeFor(operation)}\nWorkspace: ${operation.path.includes('{workspace_id}') ? 'required' : 'not required'}\nSide effects: ${sideEffects}\nInput: common flags or --file <request.json>; use --file - for stdin.${inputNote}\nOutput: human by default; --json, -json, --jsonl (lists), or --quiet.\nRelevant exits: 0 success, 2 input, 3 auth, 4 scope, 5 not found, 6 conflict, 7 validation, 8 unavailable, 9 ambiguous, 10 confirmation.\n\nExample:\n  openpmm ${command} ${positional} ${operation.path.includes('{workspace_id}') ? '--workspace ws_01JABCDEF ' : ''}${operation.body ? '--file request.json ' : ''}${confirmation ? '--yes ' : ''}--json\n`
 }

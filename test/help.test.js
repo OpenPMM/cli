@@ -76,6 +76,19 @@ test('direct post creation help exposes the conditional confirmation gate', asyn
   assert.match(stdout.read(), /--file request\.json --yes --json/)
 })
 
+test('destination connection help explains provider-specific inputs', async () => {
+  const stdout = output()
+  const exitCode = await run(['destinations', 'connect', '--help'], {
+    stdin: process.stdin,
+    stdout: stdout.stream,
+    stderr: output().stream,
+  })
+
+  assert.equal(exitCode, 0)
+  assert.match(stdout.read(), /Bluesky requires --account <handle-or-did>/)
+  assert.match(stdout.read(), /Mastodon requires --instance-origin <url>/)
+})
+
 test('webhook help exposes the public endpoint and scope', async () => {
   const stdout = output()
   const exitCode = await run(['webhooks', 'create', '--help'], {
