@@ -71,6 +71,50 @@ test('transport sends clean public API requests and parses request IDs', async (
   assert.equal(result.requestId, 'req_1')
 })
 
+test('video validation sends destination IDs through the public API', async () => {
+  let seen
+  const stdout = output()
+  await withApiKey(async () => {
+    const exitCode = await run(
+      [
+        'assets',
+        'validate-video',
+        'asset_1',
+        '--workspace',
+        'ws_1',
+        '--destination',
+        'dst_1',
+        '--destination',
+        'dst_2',
+        '--json',
+      ],
+      { stdin: process.stdin, stdout: stdout.stream, stderr: output().stream },
+      {
+        fetchImpl: async (url, init) => {
+          seen = { url: String(url), body: JSON.parse(init.body) }
+          return new Response(
+            JSON.stringify({
+              object: 'video_validation',
+              asset_id: 'asset_1',
+              metadata_version: 1,
+              status: 'compatible_original',
+              issues: [],
+            }),
+            { headers: { 'content-type': 'application/json' } }
+          )
+        },
+      }
+    )
+    assert.equal(exitCode, 0)
+  })
+  assert.equal(
+    seen.url,
+    'https://api.openpmm.com/v1/workspaces/ws_1/assets/asset_1/video-validations'
+  )
+  assert.deepEqual(seen.body, { destination_ids: ['dst_1', 'dst_2'] })
+  assert.match(stdout.read(), /"video_validation"/)
+})
+
 test('a destructive command exits 10 before making a request', async () => {
   const out = output()
   const err = output()
