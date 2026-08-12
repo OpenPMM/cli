@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { randomUUID } from 'node:crypto'
+import { createHmac, randomUUID, timingSafeEqual } from 'node:crypto'
 import { createReadStream } from 'node:fs'
 import {
   chmod,
@@ -43,6 +43,8 @@ export async function run(
     const special = parsed.words.slice(0, 2).join(' ')
     if (special === 'auth login') return await authLogin(parsed, io)
     if (special === 'auth logout') return await authLogout(parsed, io)
+    if (special === 'webhooks verify')
+      return await verifyWebhookSignature(parsed, io)
 
     if (special === 'post-groups create') {
       if (parsed.words.length > 3)
@@ -83,6 +85,16 @@ export async function run(
       throw new CliError(
         `This command can publish, disconnect, or delete data. Review it, then rerun with --yes.`,
         { code: 'confirmation_required', exitCode: 10 }
+      )
+    if (
+      ['createWebhookEndpoint', 'rotateWebhookEndpointSecret'].includes(
+        match?.operation.id
+      ) &&
+      (parsed.flags.quiet || parsed.flags.jsonl)
+    )
+      throw new CliError(
+        'Webhook secret commands require human or --json output so the one-time secret is not discarded.',
+        { exitCode: 2 }
       )
 
     const baseUrl = normalizeApiBaseUrl(
@@ -292,6 +304,11 @@ async function requestBody(operation, parsed, io) {
   set(body, 'enabled', booleanValue(flags.enabled))
   set(body, 'is_default', booleanValue(flags.default))
   set(body, 'options', jsonValue(flags.options))
+  set(body, 'url', flags.url)
+  set(body, 'event_types', csv(flags.events))
+  set(body, 'destination_filter_mode', flags['destination-filter'])
+  set(body, 'destination_ids', csv(flags.destinations))
+  set(body, 'content_mode', flags['content-mode'])
 
   if (operation.id === 'createPosts' || operation.id === 'validatePosts') {
     if (!flags.file) {
@@ -342,6 +359,7 @@ function storedTimingBody(parsed) {
 function etagReadPath(operation, path) {
   if (operation.ifMatch === 'workspace') return path
   if (operation.ifMatch === 'destination') return path
+  if (operation.ifMatch === 'webhook-endpoint') return path
   if (operation.ifMatch === 'post')
     return path.replace(/\/(cancel|reschedule|retry)$/, '')
   if (operation.ifMatch === 'post-group')
@@ -590,6 +608,84 @@ async function authLogout(parsed, io) {
   return 0
 }
 
+async function verifyWebhookSignature(parsed, io) {
+  if (parsed.words.length !== 2)
+    throw new CliError(
+      'Usage: openpmm webhooks verify --signature <header> --file <payload|->.',
+      { exitCode: 2 }
+    )
+  const signature = requiredFlag(parsed.flags, 'signature')
+  const payloadPath = requiredFlag(parsed.flags, 'file')
+  const secret = parsed.flags['secret-file']
+    ? (await readFile(parsed.flags['secret-file'], 'utf8')).trim()
+    : process.env.OPENPMM_WEBHOOK_SECRET?.trim()
+  if (!secret)
+    throw new CliError(
+      'Set OPENPMM_WEBHOOK_SECRET or pass --secret-file <path>.',
+      { exitCode: 2 }
+    )
+  const payload =
+    payloadPath === '-'
+      ? await readStreamBuffer(io.stdin)
+      : await readFile(payloadPath)
+  const tolerance = positiveIntegerFlag(
+    parsed.flags['tolerance-seconds'] ?? '300',
+    'tolerance-seconds'
+  )
+  const parts = String(signature)
+    .split(',')
+    .map((part) => part.trim().split(/=(.*)/s, 2))
+  const timestamps = parts
+    .filter(([name]) => name === 't')
+    .map(([, value]) => value)
+  const signatures = parts
+    .filter(([name]) => name === 'v1')
+    .map(([, value]) => value)
+  if (
+    timestamps.length !== 1 ||
+    signatures.length === 0 ||
+    !/^\d+$/.test(timestamps[0])
+  )
+    throw new CliError('The webhook signature header is malformed.', {
+      code: 'webhook_signature_invalid',
+      exitCode: 7,
+    })
+  const timestamp = Number(timestamps[0])
+  const now = Math.floor(Date.now() / 1000)
+  if (!Number.isSafeInteger(timestamp) || Math.abs(now - timestamp) > tolerance)
+    throw new CliError(
+      'The webhook signature timestamp is outside tolerance.',
+      {
+        code: 'webhook_signature_invalid',
+        exitCode: 7,
+      }
+    )
+  const expected = createHmac('sha256', secret)
+    .update(`${timestamp}.`)
+    .update(payload)
+    .digest()
+  const valid = signatures.reduce((matched, candidate) => {
+    const actual = /^[0-9a-f]{64}$/i.test(candidate)
+      ? Buffer.from(candidate, 'hex')
+      : Buffer.alloc(0)
+    return (
+      (actual.length === expected.length &&
+        timingSafeEqual(actual, expected)) ||
+      matched
+    )
+  }, false)
+  if (!valid)
+    throw new CliError('The webhook signature does not match the payload.', {
+      code: 'webhook_signature_invalid',
+      exitCode: 7,
+    })
+  if (parsed.flags.json)
+    return write(io.stdout, `${JSON.stringify({ valid: true, timestamp })}\n`)
+  if (!parsed.flags.quiet)
+    write(io.stdout, `Webhook signature is valid (${timestamp}).\n`)
+  return 0
+}
+
 async function storedCredential(baseUrl) {
   return (await readCredentialStore()).credentials[baseUrl] ?? null
 }
@@ -685,6 +781,7 @@ function helpFor(command) {
       'assets download',
       'assets upload',
       'post-groups create',
+      'webhooks verify',
     ]
       .sort()
       .map((value) => `  ${value}`)
@@ -698,6 +795,8 @@ function helpFor(command) {
       'openpmm assets upload <path> --workspace <id> [--kind card|reel|poster] [--content-type <type>]\n\nCreate an upload session, stream the file to storage, and complete it through public /v1 operations.\n',
     'assets download':
       'openpmm assets download <asset_id> --workspace <id> --output <path|->\n\nRequest a short-lived download URL through the public /v1 API, then download the asset. Existing files are not overwritten.\n',
+    'webhooks verify':
+      'openpmm webhooks verify --signature <header> --file <payload|-> [--secret-file <path>] [--tolerance-seconds 300]\n\nVerify OpenPMM-Signature against the exact payload bytes. Set OPENPMM_WEBHOOK_SECRET or pass a protected secret file. This local command does not call the API.\n',
   }
   if (convenienceHelp[command]) return convenienceHelp[command]
   const operation = OPERATION_BY_COMMAND.get(command)
@@ -743,6 +842,8 @@ function scopeFor(operation) {
     return operation.method === 'GET'
       ? 'notifications:read'
       : 'notifications:write'
+  if (operation.path.includes('webhook-endpoints'))
+    return operation.method === 'GET' ? 'webhooks:read' : 'webhooks:write'
   if (operation.path.includes('asset'))
     return operation.method === 'GET' ? 'assets:read' : 'assets:write'
   if (
@@ -815,9 +916,12 @@ function write(stream, value) {
   return 0
 }
 async function readStream(stream) {
+  return (await readStreamBuffer(stream)).toString('utf8')
+}
+async function readStreamBuffer(stream) {
   const chunks = []
   for await (const chunk of stream) chunks.push(Buffer.from(chunk))
-  return Buffer.concat(chunks).toString('utf8')
+  return Buffer.concat(chunks)
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {

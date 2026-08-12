@@ -7,6 +7,15 @@ npx -y @openpmm/cli --help
 export OPENPMM_API_KEY=opm_live_...
 npx -y @openpmm/cli workspaces list --json
 npx -y @openpmm/cli post-groups create launch --workspace ws_... --channel x --body 'Draft copy'
+npx -y @openpmm/cli webhooks list --workspace ws_... --json
+```
+
+Verify a received webhook locally against its exact body bytes:
+
+```bash
+OPENPMM_WEBHOOK_SECRET=whsec_... npx -y @openpmm/cli webhooks verify \
+  --signature 't=...,v1=...' \
+  --file payload.json
 ```
 
 Every Workspace command requires `--workspace ws_...` or

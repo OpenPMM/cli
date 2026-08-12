@@ -75,3 +75,32 @@ test('direct post creation help exposes the conditional confirmation gate', asyn
   )
   assert.match(stdout.read(), /--file request\.json --yes --json/)
 })
+
+test('webhook help exposes the public endpoint and scope', async () => {
+  const stdout = output()
+  const exitCode = await run(['webhooks', 'create', '--help'], {
+    stdin: process.stdin,
+    stdout: stdout.stream,
+    stderr: output().stream,
+  })
+
+  assert.equal(exitCode, 0)
+  assert.match(
+    stdout.read(),
+    /Calls POST \/workspaces\/\{workspace_id\}\/webhook-endpoints\./
+  )
+  assert.match(stdout.read(), /Required scope: webhooks:write/)
+})
+
+test('webhook verification help explains the local security check', async () => {
+  const stdout = output()
+  const exitCode = await run(['webhooks', 'verify', '--help'], {
+    stdin: process.stdin,
+    stdout: stdout.stream,
+    stderr: output().stream,
+  })
+
+  assert.equal(exitCode, 0)
+  assert.match(stdout.read(), /exact payload bytes/)
+  assert.match(stdout.read(), /does not call the API/)
+})

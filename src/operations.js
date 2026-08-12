@@ -297,6 +297,54 @@ export const OPERATIONS = [
     '/workspaces/{workspace_id}/post-groups/{group}/notifications'
   ),
   op(
+    'listWebhookEndpoints',
+    'webhooks list',
+    'GET',
+    '/workspaces/{workspace_id}/webhook-endpoints',
+    { paginated: true }
+  ),
+  op(
+    'createWebhookEndpoint',
+    'webhooks create',
+    'POST',
+    '/workspaces/{workspace_id}/webhook-endpoints',
+    { body: true, idempotent: true }
+  ),
+  op(
+    'getWebhookEndpoint',
+    'webhooks show',
+    'GET',
+    '/workspaces/{workspace_id}/webhook-endpoints/{endpoint_id}'
+  ),
+  op(
+    'patchWebhookEndpoint',
+    'webhooks update',
+    'PATCH',
+    '/workspaces/{workspace_id}/webhook-endpoints/{endpoint_id}',
+    { body: true, ifMatch: 'webhook-endpoint' }
+  ),
+  op(
+    'deleteWebhookEndpoint',
+    'webhooks delete',
+    'DELETE',
+    '/workspaces/{workspace_id}/webhook-endpoints/{endpoint_id}',
+    { ifMatch: 'webhook-endpoint', confirm: true }
+  ),
+  op(
+    'rotateWebhookEndpointSecret',
+    'webhooks rotate-secret',
+    'POST',
+    '/workspaces/{workspace_id}/webhook-endpoints/{endpoint_id}/rotate-secret',
+    { idempotent: true }
+  ),
+  op(
+    'testWebhookEndpoint',
+    'webhooks test',
+    'POST',
+    '/workspaces/{workspace_id}/webhook-endpoints/{endpoint_id}/test',
+    { idempotent: true }
+  ),
+  op(
     'validatePostGroup',
     'post-groups validate',
     'POST',

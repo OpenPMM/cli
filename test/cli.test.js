@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { createHmac } from 'node:crypto'
 import { mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -88,6 +89,180 @@ test('a destructive command exits 10 before making a request', async () => {
   assert.equal(calls, 0)
   assert.equal(out.read(), '')
   assert.match(err.read(), /confirmation_required/)
+})
+
+test('webhook creation sends typed endpoint configuration', async () => {
+  let request
+  await withApiKey(async () => {
+    const exitCode = await run(
+      [
+        'webhooks',
+        'create',
+        '--workspace',
+        'ws_1',
+        '--name',
+        'Production events',
+        '--url',
+        'https://hooks.example.com/openpmm',
+        '--events',
+        'post.published,post.failed',
+        '--destination-filter',
+        'selected',
+        '--destinations',
+        'dst_1,dst_2',
+        '--content-mode',
+        'metadata',
+        '--json',
+      ],
+      {
+        stdin: process.stdin,
+        stdout: output().stream,
+        stderr: output().stream,
+      },
+      {
+        fetchImpl: async (url, init) => {
+          request = { url: String(url), init, body: JSON.parse(init.body) }
+          return new Response(
+            JSON.stringify({
+              id: 'wh_1',
+              object: 'webhook_endpoint',
+              secret: 'whsec_once',
+            }),
+            {
+              status: 201,
+              headers: { 'content-type': 'application/json' },
+            }
+          )
+        },
+      }
+    )
+    assert.equal(exitCode, 0)
+  })
+
+  assert.equal(
+    request.url,
+    'https://api.openpmm.com/v1/workspaces/ws_1/webhook-endpoints'
+  )
+  assert.deepEqual(request.body, {
+    name: 'Production events',
+    url: 'https://hooks.example.com/openpmm',
+    event_types: ['post.published', 'post.failed'],
+    destination_filter_mode: 'selected',
+    destination_ids: ['dst_1', 'dst_2'],
+    content_mode: 'metadata',
+  })
+  assert.ok(request.init.headers['Idempotency-Key'])
+})
+
+test('webhook secret operations reject output modes that discard the secret', async () => {
+  let calls = 0
+  const stderr = output()
+  const exitCode = await run(
+    [
+      'webhooks',
+      'create',
+      '--workspace',
+      'ws_1',
+      '--name',
+      'Production',
+      '--url',
+      'https://hooks.example.com/openpmm',
+      '--quiet',
+    ],
+    { stdin: process.stdin, stdout: output().stream, stderr: stderr.stream },
+    {
+      fetchImpl: async () => {
+        calls += 1
+        return new Response()
+      },
+    }
+  )
+
+  assert.equal(exitCode, 2)
+  assert.equal(calls, 0)
+  assert.match(stderr.read(), /one-time secret is not discarded/)
+})
+
+test('webhooks verify checks the timestamp and exact payload bytes locally', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'openpmm-webhook-'))
+  const payloadPath = join(directory, 'payload.json')
+  const payload = Buffer.from('{"event":"published"}\n')
+  await writeFile(payloadPath, payload)
+  const timestamp = Math.floor(Date.now() / 1000)
+  const previous = process.env.OPENPMM_WEBHOOK_SECRET
+  process.env.OPENPMM_WEBHOOK_SECRET = 'whsec_test'
+  try {
+    const signature = createHmac('sha256', 'whsec_test')
+      .update(`${timestamp}.`)
+      .update(payload)
+      .digest('hex')
+    const stdout = output()
+    const exitCode = await run(
+      [
+        'webhooks',
+        'verify',
+        '--signature',
+        `t=${timestamp},v1=${signature}`,
+        '--file',
+        payloadPath,
+        '--json',
+      ],
+      { stdin: process.stdin, stdout: stdout.stream, stderr: output().stream }
+    )
+
+    assert.equal(exitCode, 0)
+    assert.deepEqual(JSON.parse(stdout.read()), { valid: true, timestamp })
+  } finally {
+    if (previous === undefined) delete process.env.OPENPMM_WEBHOOK_SECRET
+    else process.env.OPENPMM_WEBHOOK_SECRET = previous
+  }
+})
+
+test('webhook deletion reads an ETag and requires explicit confirmation', async () => {
+  const requests = []
+  await withApiKey(async () => {
+    const exitCode = await run(
+      ['webhooks', 'delete', 'wh_1', '--workspace', 'ws_1', '--yes', '--json'],
+      {
+        stdin: process.stdin,
+        stdout: output().stream,
+        stderr: output().stream,
+      },
+      {
+        fetchImpl: async (url, init) => {
+          requests.push({ url: String(url), init })
+          if (init.method === 'GET')
+            return new Response(
+              JSON.stringify({ id: 'wh_1', object: 'webhook_endpoint' }),
+              {
+                headers: {
+                  'content-type': 'application/json',
+                  etag: '"webhook-endpoint:wh_1:v1"',
+                },
+              }
+            )
+          return new Response(
+            JSON.stringify({
+              id: 'wh_1',
+              object: 'webhook_endpoint',
+              deleted: true,
+            }),
+            { headers: { 'content-type': 'application/json' } }
+          )
+        },
+      }
+    )
+    assert.equal(exitCode, 0)
+  })
+
+  assert.deepEqual(
+    requests.map((request) => request.init.method),
+    ['GET', 'DELETE']
+  )
+  assert.equal(
+    requests[1].init.headers['If-Match'],
+    '"webhook-endpoint:wh_1:v1"'
+  )
 })
 
 test('direct publishing requires --yes for flag and file input', async () => {
