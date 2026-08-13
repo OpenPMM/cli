@@ -71,6 +71,43 @@ test('transport sends clean public API requests and parses request IDs', async (
   assert.equal(result.requestId, 'req_1')
 })
 
+test('Slack connection starts at Account scope without a Workspace selector', async () => {
+  let requestUrl
+  await withApiKey(async () => {
+    const exitCode = await run(
+      ['slack', 'connect', '--json'],
+      {
+        stdin: process.stdin,
+        stdout: output().stream,
+        stderr: output().stream,
+      },
+      {
+        fetchImpl: async (url) => {
+          requestUrl = String(url)
+          return new Response(
+            JSON.stringify({
+              id: 'dcs_1',
+              object: 'slack_connection_session',
+              status: 'pending',
+              authorization_url: 'https://app.openpmm.com/connect',
+              expires_at: '2026-08-12T22:00:00.000Z',
+            }),
+            {
+              status: 201,
+              headers: { 'content-type': 'application/json' },
+            }
+          )
+        },
+      }
+    )
+    assert.equal(exitCode, 0)
+  })
+  assert.equal(
+    requestUrl,
+    'https://api.openpmm.com/v1/account/slack-connection-sessions'
+  )
+})
+
 test('media validation sends destination IDs through the public API', async () => {
   let seen
   const stdout = output()

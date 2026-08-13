@@ -89,6 +89,33 @@ test('destination connection help explains provider-specific inputs', async () =
   assert.match(stdout.read(), /Mastodon requires --instance-origin <url>/)
 })
 
+test('Slack help separates Account connection from Workspace settings', async () => {
+  const connect = output()
+  const update = output()
+
+  assert.equal(
+    await run(['slack', 'connect', '--help'], {
+      stdin: process.stdin,
+      stdout: connect.stream,
+      stderr: output().stream,
+    }),
+    0
+  )
+  assert.match(connect.read(), /Calls POST \/account\/slack-connection-sessions\./)
+  assert.match(connect.read(), /Required scope: notifications:write/)
+  assert.match(connect.read(), /Workspace: not required/)
+
+  assert.equal(
+    await run(['slack', 'update', '--help'], {
+      stdin: process.stdin,
+      stdout: update.stream,
+      stderr: output().stream,
+    }),
+    0
+  )
+  assert.match(update.read(), /Workspace: required/)
+})
+
 test('webhook help exposes the public endpoint and scope', async () => {
   const stdout = output()
   const exitCode = await run(['webhooks', 'create', '--help'], {
