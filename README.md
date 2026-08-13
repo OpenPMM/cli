@@ -158,6 +158,10 @@ OPENPMM_WEBHOOK_SECRET=whsec_... openpmm webhooks verify \
 Use `--file -` for a payload from stdin or `--secret-file <path>` when the
 signing secret is stored outside the environment.
 
+Connect Slack once for the Account. `slack connect`, `slack sessions show`,
+and `slack disconnect` do not use `--workspace`. Channel selection, channel
+listing, status, and tests remain Workspace-scoped.
+
 ## Command groups
 
 | Group | Examples |
@@ -167,7 +171,7 @@ signing secret is stored outside the environment.
 | Posts | `posts create`, `posts list`, `posts update`, `posts publish` |
 | Assets | `assets list`, `assets upload`, `assets validate`, `assets convert`, `assets download` |
 | Destinations | `destinations list`, `destinations connect`, `destinations refresh`, `destinations disconnect` |
-| Notifications | `slack show`, `slack update`, `slack channels`, `slack test` |
+| Notifications | `slack connect`, `slack disconnect`, `slack show`, `slack update`, `slack channels`, `slack test` |
 | Webhooks | `webhooks list`, `webhooks create`, `webhooks rotate-secret`, `webhooks verify` |
 
 The command tree is generated from the public API operation registry. Run help

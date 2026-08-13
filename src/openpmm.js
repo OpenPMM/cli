@@ -788,13 +788,6 @@ function operationTitle(operation) {
 
 function scopeFor(operation) {
   if (operation.id === 'getAccount') return 'none'
-  if (operation.path.startsWith('/account/'))
-    return operation.method === 'GET' ? 'team:read' : 'team:write'
-  if (
-    operation.path === '/workspaces' ||
-    /^\/workspaces\/\{workspace_id\}$/.test(operation.path)
-  )
-    return operation.method === 'GET' ? 'workspaces:read' : 'workspaces:write'
   if (
     operation.path.includes('notification') ||
     operation.path.includes('slack')
@@ -802,6 +795,13 @@ function scopeFor(operation) {
     return operation.method === 'GET'
       ? 'notifications:read'
       : 'notifications:write'
+  if (operation.path.startsWith('/account/'))
+    return operation.method === 'GET' ? 'team:read' : 'team:write'
+  if (
+    operation.path === '/workspaces' ||
+    /^\/workspaces\/\{workspace_id\}$/.test(operation.path)
+  )
+    return operation.method === 'GET' ? 'workspaces:read' : 'workspaces:write'
   if (operation.path.includes('webhook-endpoints'))
     return operation.method === 'GET' ? 'webhooks:read' : 'webhooks:write'
   if (operation.path.includes('asset'))
