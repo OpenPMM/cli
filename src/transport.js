@@ -7,6 +7,8 @@ export class CliError extends Error {
     this.status = options.status ?? 0
     this.requestId = options.requestId ?? null
     this.retryable = options.retryable ?? false
+    this.reason = options.reason ?? null
+    this.retryAt = options.retryAt ?? null
     this.details = options.details ?? []
     this.exitCode = options.exitCode ?? exitCodeFor(this.status, this.code)
   }
@@ -90,7 +92,7 @@ export class PublicApiTransport {
             requestId,
             status: response.status,
           }
-        const retryable = response.status === 429 || response.status >= 500
+        const retryable = response.status >= 500
         if (retryable && safeToRetry && attempt < 2) {
           const retryAfter = Number(response.headers.get('retry-after') ?? 0)
           await delay(
@@ -127,6 +129,8 @@ function problemError(payload, status, requestId) {
     status,
     requestId: payload?.request_id ?? requestId,
     retryable: Boolean(payload?.retryable),
+    reason: payload?.reason ?? null,
+    retryAt: payload?.retry_at ?? null,
     details: payload?.errors ?? [],
   })
 }

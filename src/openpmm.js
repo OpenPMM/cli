@@ -716,6 +716,8 @@ function renderError(error, flags, io) {
     status: error.status,
     request_id: error.requestId,
     retryable: error.retryable,
+    reason: error.reason,
+    retry_at: error.retryAt,
     details: error.details,
     idempotency_key: error.idempotencyKey ?? null,
   }
@@ -723,6 +725,8 @@ function renderError(error, flags, io) {
   else {
     write(io.stderr, `Error: ${error.message}\n`)
     if (error.requestId) write(io.stderr, `Request ID: ${error.requestId}\n`)
+    if (error.reason) write(io.stderr, `Reason: ${error.reason}\n`)
+    if (error.retryAt) write(io.stderr, `Retry at: ${error.retryAt}\n`)
     if (error.idempotencyKey)
       write(
         io.stderr,
