@@ -48,3 +48,45 @@ test('every documented exit class is stable', async () => {
     )
   }
 })
+
+test('a publishing safety response exits without waiting and keeps its fields', async () => {
+  const { PublicApiTransport } = await import('../src/transport.js')
+  let calls = 0
+  const transport = new PublicApiTransport({
+    apiKey: 'test-key',
+    baseUrl: 'https://example.test',
+    fetchImpl: async () => {
+      calls += 1
+      return new Response(
+        JSON.stringify({
+          detail: 'Publishing is temporarily limited.',
+          code: 'publishing_admission_limited',
+          reason: 'velocity',
+          retry_at: '2026-08-13T12:05:00.000Z',
+          retryable: true,
+        }),
+        {
+          status: 429,
+          headers: {
+            'content-type': 'application/problem+json',
+            'retry-after': '300',
+          },
+        }
+      )
+    },
+  })
+
+  await assert.rejects(
+    transport.request({
+      method: 'POST',
+      path: '/workspaces/ws_1/posts',
+      headers: { 'Idempotency-Key': 'idem_1' },
+      body: {},
+    }),
+    (error) =>
+      error.exitCode === 8 &&
+      error.reason === 'velocity' &&
+      error.retryAt === '2026-08-13T12:05:00.000Z'
+  )
+  assert.equal(calls, 1)
+})
