@@ -258,7 +258,7 @@ async function requestBody(operation, parsed, io) {
   set(body, 'body', flags.body === undefined ? undefined : asArray(flags.body))
   set(body, 'asset_ids', csv(flags.media))
   set(body, 'slack_channel_id', nullValue(flags['slack-channel']))
-  if (operation.id === 'validateAsset' || operation.id === 'convertAsset') {
+  if (operation.id === 'validateAsset') {
     set(body, 'destination_ids', csv(flags.destination))
     set(body, 'channels', csv(flags.channel))
   } else set(body, 'destination_id', flags.destination)
