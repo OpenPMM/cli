@@ -9,6 +9,7 @@ export const OPERATIONS = [
   op('getWorkspace', 'workspaces show', 'GET', '/workspaces/{workspace_id}'),
   op('patchWorkspace', 'workspaces update', 'PATCH', '/workspaces/{workspace_id}', { body: true, ifMatch: 'workspace' }),
   op('deleteWorkspace', 'workspaces delete', 'DELETE', '/workspaces/{workspace_id}', { body: true, ifMatch: 'workspace', idempotent: true, confirm: true }),
+  op('submitFeedback', 'feedback submit', 'POST', '/workspaces/{workspace_id}/feedback', { body: true, idempotent: true }),
   op('listAccountMembers', 'team members list', 'GET', '/account/members'),
   op('removeAccountMember', 'team members remove', 'DELETE', '/account/members/{user_id}', { body: true, idempotent: true, confirm: true }),
   op('listAccountInvitations', 'team invitations list', 'GET', '/account/invitations'),

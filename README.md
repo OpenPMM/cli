@@ -137,6 +137,20 @@ openpmm assets download asset_... \
 Uploads stream through public API operations. Downloads never overwrite an
 existing file.
 
+### Send feedback
+
+Send product feedback for the active workspace:
+
+```bash
+openpmm feedback submit \
+  --workspace "$OPENPMM_WORKSPACE" \
+  --message 'The scheduled Posts view did not refresh.' \
+  --json
+```
+
+OpenPMM includes the workspace and CLI environment in the feedback email. The
+account email for the API credential creator is the reply-to address.
+
 ### Manage webhooks
 
 List and manage workspace webhook endpoints through the API:

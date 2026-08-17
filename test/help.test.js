@@ -132,6 +132,23 @@ test('webhook help exposes the public endpoint and scope', async () => {
   assert.match(stdout.read(), /Required scope: webhooks:write/)
 })
 
+test('feedback help exposes the public endpoint, scope, and message flag', async () => {
+  const stdout = output()
+  const exitCode = await run(['feedback', 'submit', '--help'], {
+    stdin: process.stdin,
+    stdout: stdout.stream,
+    stderr: output().stream,
+  })
+
+  assert.equal(exitCode, 0)
+  assert.match(
+    stdout.read(),
+    /Calls POST \/workspaces\/\{workspace_id\}\/feedback\./
+  )
+  assert.match(stdout.read(), /Required scope: feedback:write/)
+  assert.match(stdout.read(), /Use --message <text>/)
+})
+
 test('webhook verification help explains the local security check', async () => {
   const stdout = output()
   const exitCode = await run(['webhooks', 'verify', '--help'], {
