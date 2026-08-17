@@ -183,7 +183,7 @@ listing, status, and tests remain Workspace-scoped.
 | Account and workspaces | `accounts show`, `workspaces list`, `workspaces create` |
 | Team | `team members list`, `team invitations create` |
 | Posts | `posts create`, `posts list`, `posts update`, `posts publish` |
-| Assets | `assets list`, `assets upload`, `assets validate`, `assets convert`, `assets download` |
+| Assets | `assets list`, `assets upload`, `assets validate`, `assets download` |
 | Destinations | `destinations list`, `destinations connect`, `destinations refresh`, `destinations disconnect` |
 | Notifications | `slack connect`, `slack disconnect`, `slack show`, `slack update`, `slack channels`, `slack test` |
 | Webhooks | `webhooks list`, `webhooks create`, `webhooks rotate-secret`, `webhooks verify` |
