@@ -95,6 +95,7 @@ export async function run(
       baseUrl,
       fetchImpl: dependencies.fetchImpl,
       stderr: io.stderr,
+      userAgent: `@openpmm/cli/${VERSION} (${process.platform}; ${process.arch})`,
     })
     const workspace =
       parsed.flags.workspace ?? process.env.OPENPMM_WORKSPACE ?? undefined
@@ -251,6 +252,7 @@ async function requestBody(operation, parsed, io) {
   set(body, 'time_zone', flags['time-zone'])
   set(body, 'confirmation', flags.confirmation)
   set(body, 'email', flags.email)
+  set(body, 'message', flags.message)
   set(body, 'enabled_channels', csv(flags['enabled-channels']))
   set(body, 'headline', flags.headline)
   set(body, 'body', flags.body === undefined ? undefined : asArray(flags.body))
@@ -895,6 +897,8 @@ function helpFor(command) {
   const inputNote =
     operation.id === 'publishPosts'
       ? ' Include every draft Post in the group.'
+      : operation.id === 'submitFeedback'
+        ? ' Use --message <text> or provide a JSON request body.'
       : operation.id === 'createDestinationConnectionSession'
         ? ' Bluesky requires --account <handle-or-did>. Mastodon requires --instance-origin <url>.'
       : ''
@@ -914,6 +918,7 @@ function operationTitle(operation) {
 
 function scopeFor(operation) {
   if (operation.id === 'getAccount') return 'none'
+  if (operation.id === 'submitFeedback') return 'feedback:write'
   if (
     operation.path.includes('notification') ||
     operation.path.includes('slack')

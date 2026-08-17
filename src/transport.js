@@ -42,7 +42,13 @@ export function normalizeApiBaseUrl(value) {
 }
 
 export class PublicApiTransport {
-  constructor({ apiKey, baseUrl, fetchImpl = fetch, stderr = process.stderr }) {
+  constructor({
+    apiKey,
+    baseUrl,
+    fetchImpl = fetch,
+    stderr = process.stderr,
+    userAgent = '@openpmm/cli/unknown',
+  }) {
     if (!apiKey)
       throw new CliError(
         'No API key is configured. Set OPENPMM_API_KEY or run `openpmm auth login --with-token`.',
@@ -52,6 +58,7 @@ export class PublicApiTransport {
     this.baseUrl = normalizeApiBaseUrl(baseUrl)
     this.fetchImpl = fetchImpl
     this.stderr = stderr
+    this.userAgent = userAgent
   }
 
   async request(input) {
@@ -67,6 +74,7 @@ export class PublicApiTransport {
       Authorization: `Bearer ${this.apiKey}`,
       Accept: 'application/json',
       'OpenPMM-Request-Id': `cli_${randomUUID()}`,
+      'User-Agent': this.userAgent,
       ...input.headers,
     }
     if (input.body !== undefined) headers['Content-Type'] = 'application/json'

@@ -285,6 +285,60 @@ test('webhook creation sends typed endpoint configuration', async () => {
   assert.ok(request.init.headers['Idempotency-Key'])
 })
 
+test('feedback submission sends a message through the public API', async () => {
+  let request
+  const stdout = output()
+  await withApiKey(async () => {
+    const exitCode = await run(
+      [
+        'feedback',
+        'submit',
+        '--workspace',
+        'ws_1',
+        '--message',
+        'The scheduled Posts view did not refresh.',
+        '--idempotency-key',
+        'feedback-request',
+        '--json',
+      ],
+      {
+        stdin: process.stdin,
+        stdout: stdout.stream,
+        stderr: output().stream,
+      },
+      {
+        fetchImpl: async (url, init) => {
+          request = { url: String(url), init, body: JSON.parse(init.body) }
+          return new Response(
+            JSON.stringify({
+              id: 'fb_1',
+              object: 'feedback',
+              sent: true,
+              submitted_at: '2026-08-17T12:00:00.000Z',
+            }),
+            {
+              status: 201,
+              headers: { 'content-type': 'application/json' },
+            }
+          )
+        },
+      }
+    )
+    assert.equal(exitCode, 0)
+  })
+
+  assert.equal(
+    request.url,
+    'https://api.openpmm.com/v1/workspaces/ws_1/feedback'
+  )
+  assert.deepEqual(request.body, {
+    message: 'The scheduled Posts view did not refresh.',
+  })
+  assert.equal(request.init.headers['Idempotency-Key'], 'feedback-request')
+  assert.match(request.init.headers['User-Agent'], /^@openpmm\/cli\/0\.1\.0 /)
+  assert.match(stdout.read(), /"feedback"/)
+})
+
 test('webhook secret operations reject output modes that discard the secret', async () => {
   let calls = 0
   const stderr = output()
