@@ -6,6 +6,7 @@ import { join } from 'node:path'
 import { test } from 'node:test'
 import { OPERATIONS } from '../src/operations.js'
 import { run } from '../src/openpmm.js'
+import { crc64NvmeBase64 } from '../src/crc64.js'
 import { PublicApiTransport } from '../src/transport.js'
 
 function output() {
@@ -721,7 +722,7 @@ test('--limit bounds auto-pagination and --jsonl emits only items', async () => 
   assert.equal(out.read(), '{"id":"ws_1"}\n')
 })
 
-test('assets upload streams bytes to storage without the API credential', async () => {
+test('assets upload sends checksum-pinned multipart data without the API credential', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'openpmm-cli-'))
   const filePath = join(directory, 'card.png')
   await writeFile(filePath, Buffer.from('image'))
@@ -734,13 +735,11 @@ test('assets upload streams bytes to storage without the API credential', async 
       {
         fetchImpl: async (url, init = {}) => {
           requests.push({ url: String(url), init })
-          if (String(url) === 'https://storage.test/upload') {
-            for await (const chunk of init.body) {
-              // Consume the file stream like the storage service does.
-              void chunk
-            }
-            return new Response(null, { status: 200 })
-          }
+          if (String(url) === 'https://storage.test/upload/1')
+            return new Response(null, {
+              status: 200,
+              headers: { ETag: '"part-1"' },
+            })
           if (String(url).endsWith('/complete'))
             return new Response(
               JSON.stringify({ id: 'ast_1', object: 'asset' }),
@@ -751,8 +750,22 @@ test('assets upload streams bytes to storage without the API credential', async 
           return new Response(
             JSON.stringify({
               id: 'upl_1',
-              upload_url: 'https://storage.test/upload',
-              required_headers: { 'Content-Type': 'image/png' },
+              object: 'asset_upload',
+              asset_id: 'ast_1',
+              protocol: 'multipart',
+              part_size: 8 * 1024 * 1024,
+              byte_size: 5,
+              parts: [
+                {
+                  part_number: 1,
+                  upload_url: 'https://storage.test/upload/1',
+                  required_headers: {
+                    'x-amz-checksum-crc64nvme': crc64NvmeBase64(
+                      Buffer.from('image')
+                    ),
+                  },
+                },
+              ],
             }),
             { status: 201, headers: { 'content-type': 'application/json' } }
           )
@@ -763,7 +776,27 @@ test('assets upload streams bytes to storage without the API credential', async 
   })
   assert.equal(requests.length, 3)
   assert.equal(requests[1].init.headers.Authorization, undefined)
-  assert.equal(requests[1].init.headers['Content-Type'], 'image/png')
+  assert.equal(
+    requests[1].init.headers['x-amz-checksum-crc64nvme'],
+    crc64NvmeBase64(Buffer.from('image'))
+  )
+  assert.deepEqual(JSON.parse(requests[0].init.body).parts, [
+    {
+      part_number: 1,
+      checksum_crc64nvme: crc64NvmeBase64(Buffer.from('image')),
+    },
+  ])
+  assert.deepEqual(JSON.parse(requests[2].init.body), {
+    byte_size: 5,
+    checksum_crc64nvme: crc64NvmeBase64(Buffer.from('image')),
+    parts: [
+      {
+        part_number: 1,
+        etag: '"part-1"',
+        checksum_crc64nvme: crc64NvmeBase64(Buffer.from('image')),
+      },
+    ],
+  })
   assert.equal(JSON.parse(out.read()).data.id, 'ast_1')
 })
 
