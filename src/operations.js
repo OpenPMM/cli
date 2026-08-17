@@ -23,7 +23,7 @@ export const OPERATIONS = [
   op('deleteAsset', 'assets delete', 'DELETE', '/workspaces/{workspace_id}/assets/{asset_id}', { idempotent: true, confirm: true }),
   op('beginAssetUpload', 'asset-uploads create', 'POST', '/workspaces/{workspace_id}/asset-uploads', { body: true, idempotent: true }),
   op('getAssetUpload', 'asset-uploads show', 'GET', '/workspaces/{workspace_id}/asset-uploads/{upload_id}'),
-  op('completeAssetUpload', 'asset-uploads complete', 'POST', '/workspaces/{workspace_id}/asset-uploads/{upload_id}/complete', { idempotent: true }),
+  op('completeAssetUpload', 'asset-uploads complete', 'POST', '/workspaces/{workspace_id}/asset-uploads/{upload_id}/complete', { body: true, idempotent: true }),
   op('listDestinations', 'destinations list', 'GET', '/workspaces/{workspace_id}/destinations'),
   op('getDestination', 'destinations show', 'GET', '/workspaces/{workspace_id}/destinations/{destination_id}'),
   op('patchDestination', 'destinations update', 'PATCH', '/workspaces/{workspace_id}/destinations/{destination_id}', { body: true, ifMatch: 'destination' }),

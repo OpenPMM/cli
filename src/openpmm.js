@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 import { createHmac, randomUUID, timingSafeEqual } from 'node:crypto'
-import { createReadStream } from 'node:fs'
 import {
   chmod,
   mkdir,
+  open,
   readFile,
   rename,
   stat,
@@ -12,6 +12,7 @@ import {
 import { homedir } from 'node:os'
 import { basename, dirname, extname, join } from 'node:path'
 import { stdin, stdout, stderr } from 'node:process'
+import { Crc64Nvme, crc64NvmeBase64 } from './crc64.js'
 import { OPERATIONS, OPERATION_BY_COMMAND } from './operations.js'
 import {
   CliError,
@@ -21,6 +22,7 @@ import {
 
 export const VERSION = '0.1.0'
 const DEFAULT_API_BASE_URL = 'https://api.openpmm.com/v1'
+const ASSET_UPLOAD_PART_SIZE = 8 * 1024 * 1024
 const CREDENTIAL_PATH = join(
   homedir(),
   '.config',
@@ -381,6 +383,11 @@ async function uploadAsset(transport, workspace, parsed, io) {
   const contentType = parsed.flags['content-type'] ?? contentTypeFor(fileName)
   const kind = parsed.flags.kind ?? kindFor(fileName)
   const workflowKey = parsed.flags['idempotency-key'] ?? randomUUID()
+  const checksums = await checksumAssetParts(
+    filePath,
+    metadata.size,
+    ASSET_UPLOAD_PART_SIZE
+  )
   const beginKey = `${workflowKey}:begin`
   const begun = await transport.request({
     method: 'POST',
@@ -391,31 +398,57 @@ async function uploadAsset(transport, workspace, parsed, io) {
       file_name: fileName,
       content_type: contentType,
       byte_size: metadata.size,
+      parts: checksums.parts.map((part) => ({
+        part_number: part.partNumber,
+        checksum_crc64nvme: part.checksumCrc64Nvme,
+      })),
     },
   })
   if (!parsed.flags.quiet && !parsed.flags.json)
     write(io.stderr, `Uploading ${fileName} (${metadata.size} bytes)...\n`)
-  const rawResponse = await transport.fetchImpl(begun.data.upload_url, {
-    method: 'PUT',
-    headers: {
-      ...begun.data.required_headers,
-      'Content-Length': String(metadata.size),
-      'Content-Range': `bytes 0-${metadata.size - 1}/${metadata.size}`,
-    },
-    body: createReadStream(filePath),
-    duplex: 'half',
-    signal: AbortSignal.timeout(30 * 60_000),
-  })
-  if (!rawResponse.ok)
-    throw new CliError(
-      `The storage upload failed with HTTP ${rawResponse.status}. The upload ID is ${begun.data.id}; inspect it with ‘openpmm asset-uploads show ${begun.data.id}’.`,
-      { code: 'asset_upload_failed', status: rawResponse.status, exitCode: 8 }
-    )
+  validateMultipartInstructions(begun.data, metadata.size, checksums.parts)
+  const completedParts = []
+  const handle = await open(filePath, 'r')
+  try {
+    for (const instruction of begun.data.parts) {
+      const checksum = checksums.parts[instruction.part_number - 1]
+      const offset = (instruction.part_number - 1) * ASSET_UPLOAD_PART_SIZE
+      const bytes = await readFilePart(
+        handle,
+        offset,
+        Math.min(ASSET_UPLOAD_PART_SIZE, metadata.size - offset)
+      )
+      const response = await uploadAssetPart(
+        transport.fetchImpl,
+        instruction,
+        bytes,
+        begun.data.id
+      )
+      const etag = response.headers.get('etag')
+      if (!etag)
+        throw new CliError('The storage upload did not return a part ETag.', {
+          code: 'asset_upload_failed',
+          exitCode: 8,
+        })
+      completedParts.push({
+        part_number: instruction.part_number,
+        etag,
+        checksum_crc64nvme: checksum.checksumCrc64Nvme,
+      })
+    }
+  } finally {
+    await handle.close()
+  }
   const completeKey = `${workflowKey}:complete`
   const completed = await transport.request({
     method: 'POST',
     path: `/workspaces/${encodeURIComponent(workspace)}/asset-uploads/${encodeURIComponent(begun.data.id)}/complete`,
     headers: { 'Idempotency-Key': completeKey },
+    body: {
+      byte_size: metadata.size,
+      checksum_crc64nvme: checksums.full,
+      parts: completedParts,
+    },
   })
   renderSuccess(
     {
@@ -431,6 +464,95 @@ async function uploadAsset(transport, workspace, parsed, io) {
     io
   )
   return 0
+}
+
+async function checksumAssetParts(filePath, byteSize, partSize) {
+  const handle = await open(filePath, 'r')
+  const full = new Crc64Nvme()
+  const parts = []
+  try {
+    for (let offset = 0, partNumber = 1; offset < byteSize; partNumber += 1) {
+      const bytes = await readFilePart(
+        handle,
+        offset,
+        Math.min(partSize, byteSize - offset)
+      )
+      full.update(bytes)
+      parts.push({
+        partNumber,
+        checksumCrc64Nvme: crc64NvmeBase64(bytes),
+      })
+      offset += bytes.byteLength
+    }
+  } finally {
+    await handle.close()
+  }
+  return { full: full.digestBase64(), parts }
+}
+
+async function readFilePart(handle, offset, length) {
+  const bytes = Buffer.allocUnsafe(length)
+  let read = 0
+  while (read < length) {
+    const result = await handle.read(bytes, read, length - read, offset + read)
+    if (result.bytesRead === 0)
+      throw new CliError('The asset file changed while it was read.', {
+        code: 'asset_upload_failed',
+        exitCode: 8,
+      })
+    read += result.bytesRead
+  }
+  return bytes
+}
+
+function validateMultipartInstructions(upload, byteSize, checksums) {
+  if (
+    upload.protocol !== 'multipart' ||
+    upload.part_size !== ASSET_UPLOAD_PART_SIZE ||
+    upload.byte_size !== byteSize ||
+    !Array.isArray(upload.parts) ||
+    upload.parts.length !== checksums.length ||
+    upload.parts.some(
+      (part, index) =>
+        part.part_number !== index + 1 ||
+        typeof part.upload_url !== 'string' ||
+        !part.required_headers ||
+        typeof part.required_headers !== 'object' ||
+        part.required_headers['x-amz-checksum-crc64nvme'] !==
+          checksums[index].checksumCrc64Nvme
+    )
+  )
+    throw new CliError('The API returned invalid multipart instructions.', {
+      code: 'asset_upload_failed',
+      exitCode: 8,
+    })
+}
+
+async function uploadAssetPart(fetchImpl, instruction, bytes, uploadId) {
+  let response
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    try {
+      response = await fetchImpl(instruction.upload_url, {
+        method: 'PUT',
+        headers: instruction.required_headers,
+        body: bytes,
+        signal: AbortSignal.timeout(30 * 60_000),
+      })
+      if (response.ok) return response
+      if (response.status < 500 && response.status !== 429) break
+    } catch (error) {
+      if (attempt === 4) throw error
+    }
+    await new Promise((resolve) => setTimeout(resolve, 250 * 2 ** attempt))
+  }
+  throw new CliError(
+    `The storage upload failed with HTTP ${response?.status ?? 0}. The upload ID is ${uploadId}; inspect it with ‘openpmm asset-uploads show ${uploadId}’.`,
+    {
+      code: 'asset_upload_failed',
+      status: response?.status ?? 0,
+      exitCode: 8,
+    }
+  )
 }
 
 async function downloadAsset(transport, workspace, parsed, io) {
