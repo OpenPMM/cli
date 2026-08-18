@@ -267,6 +267,7 @@ async function requestBody(operation, parsed, io) {
   set(body, 'account_identifier', flags.account)
   set(body, 'enabled', booleanValue(flags.enabled))
   set(body, 'is_default', booleanValue(flags.default))
+  set(body, 'queue_policy', jsonValue(flags['queue-policy']))
   set(body, 'options', jsonValue(flags.options))
   set(body, 'url', flags.url)
   set(body, 'event_types', csv(flags.events))
@@ -277,9 +278,12 @@ async function requestBody(operation, parsed, io) {
   if (operation.id === 'createPosts') {
     if (!flags.file) {
       const publish = flags.when !== 'draft'
+      const when = flags.when ?? 'now'
       body = {
-        when: flags.when ?? 'now',
-        time_zone: flags['time-zone'] ?? 'UTC',
+        when,
+        ...(when === 'queue'
+          ? {}
+          : { time_zone: flags['time-zone'] ?? 'UTC' }),
         ...(flags.group ? { group: flags.group } : {}),
         posts: [
           {
@@ -301,15 +305,33 @@ async function requestBody(operation, parsed, io) {
       throw new CliError('--post-version must be a positive integer.', {
         exitCode: 2,
       })
+    const when = flags.at ?? 'now'
     body = {
       confirmed: true,
-      when: flags.at ?? 'now',
-      time_zone: flags['time-zone'] ?? 'UTC',
+      when,
+      ...(when === 'queue'
+        ? {}
+        : { time_zone: flags['time-zone'] ?? 'UTC' }),
       posts: [
         {
           id: requiredFlag(flags, 'post'),
           version,
           destination_id: requiredFlag(flags, 'destination'),
+        },
+      ],
+    }
+  }
+  if (operation.id === 'movePostsInQueue' && !flags.file) {
+    body = {
+      confirmed: true,
+      local_date: requiredFlag(flags, 'local-date'),
+      posts: [
+        {
+          id: requiredFlag(flags, 'post'),
+          expected_scheduled_at: requiredFlag(
+            flags,
+            'expected-scheduled-at'
+          ),
         },
       ],
     }
@@ -896,9 +918,13 @@ function helpFor(command) {
       : 'No extra confirmation.'
   const inputNote =
     operation.id === 'publishPosts'
-      ? ' Include every draft Post in the group.'
+      ? ' Include every draft Post in the group. Use --at queue to use the next destination queue slot.'
       : operation.id === 'createPosts'
-        ? ' Repeat --body in order to publish a self-reply chain on X, Bluesky, Mastodon, or Threads. Media attaches to the opening post.'
+        ? ' Use --when queue to use the next destination queue slot. Repeat --body in order to publish a self-reply chain on X, Bluesky, Mastodon, or Threads. Media attaches to the opening post.'
+      : operation.id === 'movePostsInQueue'
+        ? ' Use --post, --expected-scheduled-at, and --local-date for one Post. Use --file for an atomic multi-Post move.'
+      : operation.id === 'patchDestination'
+        ? ' Use --queue-policy <json> or provide a complete JSON request body.'
       : operation.id === 'submitFeedback'
         ? ' Use --message <text> or provide a JSON request body.'
       : operation.id === 'createDestinationConnectionSession'

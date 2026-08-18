@@ -46,6 +46,7 @@ export const OPERATIONS = [
   op('testWebhookEndpoint', 'webhooks test', 'POST', '/workspaces/{workspace_id}/webhook-endpoints/{endpoint_id}/test', { idempotent: true }),
   op('createPosts', 'posts create', 'POST', '/workspaces/{workspace_id}/posts', { body: true, idempotent: true }),
   op('listPosts', 'posts list', 'GET', '/workspaces/{workspace_id}/posts', { paginated: true }),
+  op('movePostsInQueue', 'posts move-in-queue', 'POST', '/workspaces/{workspace_id}/posts/move-in-queue', { body: true, idempotent: true, confirm: true }),
   op('getPost', 'posts show', 'GET', '/workspaces/{workspace_id}/posts/{post}'),
   op('patchPost', 'posts update', 'PATCH', '/workspaces/{workspace_id}/posts/{post}', { body: true, ifMatch: 'post' }),
   op('deletePost', 'posts delete', 'DELETE', '/workspaces/{workspace_id}/posts/{post}', { ifMatch: 'post', idempotent: true }),

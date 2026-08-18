@@ -687,6 +687,49 @@ test('posts create preserves repeated body flags for provider threads', async ()
   assert.deepEqual(body.posts[0].body, ['Opening', 'Reply'])
 })
 
+test('posts create queue uses the Workspace timezone', async () => {
+  let body
+  await withApiKey(async () => {
+    const exitCode = await run(
+      [
+        'posts',
+        'create',
+        '--workspace',
+        'ws_1',
+        '--destination',
+        'dst_1',
+        '--when',
+        'queue',
+        '--body',
+        'Queue me',
+        '--yes',
+        '--json',
+      ],
+      {
+        stdin: process.stdin,
+        stdout: output().stream,
+        stderr: output().stream,
+      },
+      {
+        fetchImpl: async (_url, init) => {
+          body = JSON.parse(init.body)
+          return new Response(
+            JSON.stringify({ object: 'post_set', posts: [] }),
+            {
+              status: 201,
+              headers: { 'content-type': 'application/json' },
+            }
+          )
+        },
+      }
+    )
+    assert.equal(exitCode, 0)
+  })
+  assert.equal(body.when, 'queue')
+  assert.equal(body.confirmed, true)
+  assert.ok(!Object.hasOwn(body, 'time_zone'))
+})
+
 test('posts publish composes a same-Post publication request', async () => {
   let body
   await withApiKey(async () => {
@@ -726,6 +769,106 @@ test('posts publish composes a same-Post publication request', async () => {
     when: 'now',
     time_zone: 'UTC',
     posts: [{ id: 'post_1', version: 3, destination_id: 'dst_1' }],
+  })
+})
+
+test('posts move-in-queue sends an atomic compare-and-swap request', async () => {
+  let request
+  await withApiKey(async () => {
+    const exitCode = await run(
+      [
+        'posts',
+        'move-in-queue',
+        '--workspace',
+        'ws_1',
+        '--post',
+        'post_1',
+        '--expected-scheduled-at',
+        '2026-08-20T08:00:00.000Z',
+        '--local-date',
+        '2026-08-22',
+        '--yes',
+        '--json',
+      ],
+      {
+        stdin: process.stdin,
+        stdout: output().stream,
+        stderr: output().stream,
+      },
+      {
+        fetchImpl: async (url, init) => {
+          request = { url: String(url), body: JSON.parse(init.body) }
+          return new Response(JSON.stringify({ posts: [] }), {
+            headers: { 'content-type': 'application/json' },
+          })
+        },
+      }
+    )
+    assert.equal(exitCode, 0)
+  })
+  assert.match(request.url, /\/posts\/move-in-queue$/)
+  assert.deepEqual(request.body, {
+    confirmed: true,
+    local_date: '2026-08-22',
+    posts: [
+      {
+        id: 'post_1',
+        expected_scheduled_at: '2026-08-20T08:00:00.000Z',
+      },
+    ],
+  })
+})
+
+test('destinations update accepts queue policy JSON', async () => {
+  const requests = []
+  const queuePolicy = {
+    enabled_weekdays: ['monday'],
+    windows: [
+      {
+        weekdays: ['monday'],
+        start_time: '08:00',
+        end_time: '10:00',
+      },
+    ],
+  }
+  await withApiKey(async () => {
+    const exitCode = await run(
+      [
+        'destinations',
+        'update',
+        'dst_1',
+        '--workspace',
+        'ws_1',
+        '--queue-policy',
+        JSON.stringify(queuePolicy),
+        '--json',
+      ],
+      {
+        stdin: process.stdin,
+        stdout: output().stream,
+        stderr: output().stream,
+      },
+      {
+        fetchImpl: async (url, init) => {
+          requests.push({ url: String(url), init })
+          if (init.method === 'GET')
+            return new Response(JSON.stringify({ id: 'dst_1' }), {
+              headers: {
+                'content-type': 'application/json',
+                etag: '"destination:dst_1:1"',
+              },
+            })
+          return new Response(JSON.stringify({ id: 'dst_1' }), {
+            headers: { 'content-type': 'application/json' },
+          })
+        },
+      }
+    )
+    assert.equal(exitCode, 0)
+  })
+  assert.equal(requests[1].init.method, 'PATCH')
+  assert.deepEqual(JSON.parse(requests[1].init.body), {
+    queue_policy: queuePolicy,
   })
 })
 

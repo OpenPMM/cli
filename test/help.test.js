@@ -32,7 +32,7 @@ Calls POST /workspaces/{workspace_id}/posts/publish.
 Required scope: posts:write
 Workspace: required
 Side effects: Requires --yes. This can publish, disconnect, or delete data.
-Input: common flags or --file <request.json>; use --file - for stdin. Include every draft Post in the group.
+Input: common flags or --file <request.json>; use --file - for stdin. Include every draft Post in the group. Use --at queue to use the next destination queue slot.
 Output: human by default; --json, -json, --jsonl (lists), or --quiet.
 Relevant exits: 0 success, 2 input, 3 auth, 4 scope, 5 not found, 6 conflict, 7 validation, 8 unavailable, 9 ambiguous, 10 confirmation.
 
@@ -74,6 +74,20 @@ test('direct post creation help exposes the conditional confirmation gate', asyn
     /Side effects: Requires --yes unless the request creates a draft\./
   )
   assert.match(stdout.read(), /--file request\.json --yes --json/)
+  assert.match(stdout.read(), /Use --when queue/)
+})
+
+test('queue move help explains one Post and atomic multi-Post input', async () => {
+  const stdout = output()
+  const exitCode = await run(['posts', 'move-in-queue', '--help'], {
+    stdin: process.stdin,
+    stdout: stdout.stream,
+    stderr: output().stream,
+  })
+
+  assert.equal(exitCode, 0)
+  assert.match(stdout.read(), /Use --post, --expected-scheduled-at, and --local-date/)
+  assert.match(stdout.read(), /Use --file for an atomic multi-Post move/)
 })
 
 test('destination connection help explains provider-specific inputs', async () => {
