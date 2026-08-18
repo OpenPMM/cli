@@ -646,6 +646,47 @@ test('posts create composes the public draft operation', async () => {
   assert.equal(request.body.posts[0].channel, 'x')
 })
 
+test('posts create preserves repeated body flags for provider threads', async () => {
+  let body
+  await withApiKey(async () => {
+    const exitCode = await run(
+      [
+        'posts',
+        'create',
+        '--workspace',
+        'ws_1',
+        '--destination',
+        'dst_mastodon',
+        '--body',
+        'Opening',
+        '--body',
+        'Reply',
+        '--yes',
+        '--json',
+      ],
+      {
+        stdin: process.stdin,
+        stdout: output().stream,
+        stderr: output().stream,
+      },
+      {
+        fetchImpl: async (_url, init) => {
+          body = JSON.parse(init.body)
+          return new Response(
+            JSON.stringify({ object: 'post_set', posts: [] }),
+            {
+              status: 201,
+              headers: { 'content-type': 'application/json' },
+            }
+          )
+        },
+      }
+    )
+    assert.equal(exitCode, 0)
+  })
+  assert.deepEqual(body.posts[0].body, ['Opening', 'Reply'])
+})
+
 test('posts publish composes a same-Post publication request', async () => {
   let body
   await withApiKey(async () => {

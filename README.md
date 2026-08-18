@@ -85,6 +85,19 @@ Every workspace-scoped command accepts `--workspace <id>` or
 `OPENPMM_WORKSPACE`. Use the explicit flag when a script works with more than
 one workspace.
 
+Repeat `--body` to publish an ordered self-reply chain on X, Bluesky, Mastodon,
+or Threads. Media attaches to the opening post:
+
+```bash
+openpmm posts create \
+  --workspace "$OPENPMM_WORKSPACE" \
+  --destination dst_... \
+  --body 'Opening post' \
+  --body 'First reply' \
+  --body 'Second reply' \
+  --yes
+```
+
 ## Common workflows
 
 ### Publish a post

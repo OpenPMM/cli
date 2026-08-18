@@ -897,6 +897,8 @@ function helpFor(command) {
   const inputNote =
     operation.id === 'publishPosts'
       ? ' Include every draft Post in the group.'
+      : operation.id === 'createPosts'
+        ? ' Repeat --body in order to publish a self-reply chain on X, Bluesky, Mastodon, or Threads. Media attaches to the opening post.'
       : operation.id === 'submitFeedback'
         ? ' Use --message <text> or provide a JSON request body.'
       : operation.id === 'createDestinationConnectionSession'
