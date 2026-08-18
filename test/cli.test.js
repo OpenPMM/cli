@@ -72,6 +72,38 @@ test('transport sends clean public API requests and parses request IDs', async (
   assert.equal(result.requestId, 'req_1')
 })
 
+test('transport returns accepted background preparation responses immediately', async () => {
+  const transport = new PublicApiTransport({
+    apiKey: 'opm_live_test',
+    baseUrl: 'https://api.openpmm.com/v1',
+    fetchImpl: async () =>
+      new Response(
+        JSON.stringify({
+          object: 'post_set',
+          posts: [{ id: 'post_123', state: 'preparing' }],
+        }),
+        {
+          status: 202,
+          headers: {
+            'content-type': 'application/json',
+            'retry-after': '5',
+          },
+        }
+      ),
+  })
+
+  const result = await transport.request({
+    method: 'POST',
+    path: '/workspaces/ws_123/posts/publish',
+    headers: { 'Idempotency-Key': 'publish_123' },
+    body: { confirmed: true },
+  })
+
+  assert.equal(result.status, 202)
+  assert.equal(result.data.posts[0].state, 'preparing')
+  assert.equal(result.headers.get('retry-after'), '5')
+})
+
 test('Slack connection starts at Account scope without a Workspace selector', async () => {
   let requestUrl
   await withApiKey(async () => {
