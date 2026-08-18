@@ -3,6 +3,7 @@
  * `src/lib/public-api/operations.ts`; repository tests enforce both sides.
  */
 export const OPERATIONS = [
+  op('createSignupIntent', 'signup create', 'POST', '/signup-intents', { body: true, authentication: 'none' }),
   op('getAccount', 'accounts show', 'GET', '/account'),
   op('listWorkspaces', 'workspaces list', 'GET', '/workspaces', { paginated: true }),
   op('createWorkspace', 'workspaces create', 'POST', '/workspaces', { body: true, idempotent: true }),

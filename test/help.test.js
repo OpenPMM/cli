@@ -163,6 +163,20 @@ test('feedback help exposes the public endpoint, scope, and message flag', async
   assert.match(stdout.read(), /Use --message <text>/)
 })
 
+test('signup help states the anonymous browser handoff', async () => {
+  const stdout = output()
+  const exitCode = await run(['signup', 'create', '--help'], {
+    stdin: process.stdin,
+    stdout: stdout.stream,
+    stderr: output().stream,
+  })
+
+  assert.equal(exitCode, 0)
+  assert.match(stdout.read(), /Calls POST \/signup-intents\./)
+  assert.match(stdout.read(), /does not require an API key/)
+  assert.match(stdout.read(), /Google or an email address and password/)
+})
+
 test('webhook verification help explains the local security check', async () => {
   const stdout = output()
   const exitCode = await run(['webhooks', 'verify', '--help'], {

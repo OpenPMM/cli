@@ -88,10 +88,13 @@ export async function run(
         process.env.OPENPMM_API_BASE_URL ??
         DEFAULT_API_BASE_URL
     )
-    const apiKey =
-      process.env.OPENPMM_API_KEY ?? (await storedCredential(baseUrl))
+    const anonymous = match?.operation.authentication === 'none'
+    const apiKey = anonymous
+      ? null
+      : process.env.OPENPMM_API_KEY ?? (await storedCredential(baseUrl))
     const transport = new PublicApiTransport({
       apiKey,
+      anonymous,
       baseUrl,
       fetchImpl: dependencies.fetchImpl,
       stderr: io.stderr,
@@ -269,6 +272,7 @@ async function requestBody(operation, parsed, io) {
   set(body, 'time_zone', flags['time-zone'])
   set(body, 'confirmation', flags.confirmation)
   set(body, 'email', flags.email)
+  set(body, 'workspace_name', flags['workspace-name'])
   set(body, 'message', flags.message)
   set(body, 'enabled_channels', csv(flags['enabled-channels']))
   set(body, 'headline', flags.headline)
@@ -292,6 +296,13 @@ async function requestBody(operation, parsed, io) {
   set(body, 'destination_filter_mode', flags['destination-filter'])
   set(body, 'destination_ids', csv(flags.destinations))
   set(body, 'content_mode', flags['content-mode'])
+
+  if (operation.id === 'createSignupIntent' && !flags.file) {
+    body = {
+      email: requiredFlag(flags, 'email'),
+      workspace_name: requiredFlag(flags, 'workspace-name'),
+    }
+  }
 
   if (operation.id === 'createPosts') {
     if (!flags.file) {
@@ -844,6 +855,7 @@ function renderSuccess(output, flags, io) {
   if (flags.quiet) {
     const value =
       output.data?.id ??
+      output.data?.signup_url ??
       output.data?.draft_id ??
       output.data?.group ??
       output.data?.data
@@ -903,7 +915,7 @@ function renderError(error, flags, io) {
 
 function helpFor(command) {
   if (!command)
-    return `OpenPMM CLI ${VERSION}\n\nUse every OpenPMM customer workflow through the public /v1 API.\n\nCommon path:\n  export OPENPMM_API_KEY=opm_live_...\n  openpmm workspaces list --json\n  openpmm posts create --workspace ws_... --when draft --channel x --body "Draft copy"\n  openpmm posts list --workspace ws_... --view drafts --json\n  openpmm posts publish --workspace ws_... --post post_... --post-version 1 --destination dst_... --yes\n\nCommands:\n${[
+    return `OpenPMM CLI ${VERSION}\n\nUse every OpenPMM customer workflow through the public /v1 API.\n\nCommon path:\n  openpmm signup create --email you@example.com --workspace-name "Product Marketing"\n  export OPENPMM_API_KEY=opm_live_...\n  openpmm workspaces list --json\n  openpmm posts create --workspace ws_... --when draft --channel x --body "Draft copy"\n  openpmm posts list --workspace ws_... --view drafts --json\n  openpmm posts publish --workspace ws_... --post post_... --post-version 1 --destination dst_... --yes\n\nCommands:\n${[
       ...OPERATIONS.map((operation) => operation.command),
       'assets download',
       'assets upload',
@@ -947,6 +959,8 @@ function helpFor(command) {
         ? ' Use --queue-policy <json> or provide a complete JSON request body.'
       : operation.id === 'submitFeedback'
         ? ' Use --message <text> or provide a JSON request body.'
+      : operation.id === 'createSignupIntent'
+        ? ' Use --email and --workspace-name. This command does not require an API key. Open the returned signup_url to finish with Google or an email address and password.'
       : operation.id === 'createDestinationConnectionSession'
         ? ' Bluesky requires --account <handle-or-did>. Mastodon requires --instance-origin <url>.'
       : ''
@@ -965,6 +979,7 @@ function operationTitle(operation) {
 }
 
 function scopeFor(operation) {
+  if (operation.authentication === 'none') return 'none'
   if (operation.id === 'getAccount') return 'none'
   if (operation.id === 'submitFeedback') return 'feedback:write'
   if (

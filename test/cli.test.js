@@ -104,6 +104,51 @@ test('transport returns accepted background preparation responses immediately', 
   assert.equal(result.headers.get('retry-after'), '5')
 })
 
+test('signup creates a hosted link without reading or sending an API key', async () => {
+  const previous = process.env.OPENPMM_API_KEY
+  delete process.env.OPENPMM_API_KEY
+  let seen
+  const stdout = output()
+  try {
+    const exitCode = await run(
+      [
+        'signup',
+        'create',
+        '--email',
+        'publisher@example.com',
+        '--workspace-name',
+        'Product Marketing',
+        '--json',
+      ],
+      { stdin: process.stdin, stdout: stdout.stream, stderr: output().stream },
+      {
+        fetchImpl: async (url, init) => {
+          seen = { url: String(url), init, body: JSON.parse(init.body) }
+          return new Response(
+            JSON.stringify({
+              object: 'signup_intent',
+              signup_url: 'https://app.openpmm.com/signup/token',
+              expires_at: '2026-08-18T12:30:00.000Z',
+            }),
+            { status: 201, headers: { 'content-type': 'application/json' } }
+          )
+        },
+      }
+    )
+    assert.equal(exitCode, 0)
+  } finally {
+    if (previous === undefined) delete process.env.OPENPMM_API_KEY
+    else process.env.OPENPMM_API_KEY = previous
+  }
+  assert.equal(seen.url, 'https://api.openpmm.com/v1/signup-intents')
+  assert.equal(seen.init.headers.Authorization, undefined)
+  assert.deepEqual(seen.body, {
+    email: 'publisher@example.com',
+    workspace_name: 'Product Marketing',
+  })
+  assert.match(stdout.read(), /https:\/\/app\.openpmm\.com\/signup\/token/)
+})
+
 test('Slack connection starts at Account scope without a Workspace selector', async () => {
   let requestUrl
   await withApiKey(async () => {
