@@ -1,4 +1,3 @@
-#!/usr/bin/env node
 import { createHmac, randomUUID, timingSafeEqual } from 'node:crypto'
 import {
   chmod,
@@ -1071,8 +1070,4 @@ async function readStreamBuffer(stream) {
   const chunks = []
   for await (const chunk of stream) chunks.push(Buffer.from(chunk))
   return Buffer.concat(chunks)
-}
-
-if (import.meta.url === `file://${process.argv[1]}`) {
-  process.exitCode = await run()
 }

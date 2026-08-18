@@ -1,8 +1,13 @@
 import assert from 'node:assert/strict'
-import { readFile } from 'node:fs/promises'
+import { execFile } from 'node:child_process'
+import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { test } from 'node:test'
+import { promisify } from 'node:util'
 
 const PACKAGE_ROOT = new URL('../', import.meta.url)
+const execFileAsync = promisify(execFile)
 
 test('the distributed package has no server or private-route dependency', async () => {
   const packageJson = JSON.parse(
@@ -11,6 +16,7 @@ test('the distributed package has no server or private-route dependency', async 
   assert.equal(packageJson.dependencies, undefined)
 
   for (const file of [
+    'src/bin.js',
     'src/openpmm.js',
     'src/operations.js',
     'src/transport.js',
@@ -20,6 +26,45 @@ test('the distributed package has no server or private-route dependency', async 
     assert.doesNotMatch(source, /drizzle|postgres|supabase|safe-runner/)
     if (file !== 'src/transport.js') assert.doesNotMatch(source, /['"]\/api\//)
     assert.doesNotMatch(source, /lib\/distribution|lib\/db|system\/send/)
+  }
+})
+
+test('the packed CLI runs through its installed executable', async () => {
+  const packageJson = JSON.parse(
+    await readFile(new URL('package.json', PACKAGE_ROOT), 'utf8')
+  )
+  const directory = await mkdtemp(join(tmpdir(), 'openpmm-package-'))
+  const environment = {
+    ...process.env,
+    npm_config_audit: 'false',
+    npm_config_cache: join(directory, 'cache'),
+    npm_config_fund: 'false',
+    npm_config_update_notifier: 'false',
+  }
+
+  try {
+    const packed = await execFileAsync(
+      process.platform === 'win32' ? 'npm.cmd' : 'npm',
+      ['pack', '--pack-destination', directory],
+      { cwd: PACKAGE_ROOT, env: environment }
+    )
+    const tarball = join(directory, packed.stdout.trim())
+    const prefix = join(directory, 'global')
+    await execFileAsync(
+      process.platform === 'win32' ? 'npm.cmd' : 'npm',
+      ['install', '--global', '--prefix', prefix, tarball],
+      { env: environment }
+    )
+    const executable =
+      process.platform === 'win32'
+        ? join(prefix, 'openpmm.cmd')
+        : join(prefix, 'bin', 'openpmm')
+    const result = await execFileAsync(executable, ['--version'])
+
+    assert.equal(result.stdout, `${packageJson.version}\n`)
+    assert.equal(result.stderr, '')
+  } finally {
+    await rm(directory, { recursive: true, force: true })
   }
 })
 
