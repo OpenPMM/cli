@@ -220,6 +220,19 @@ function parseArguments(argv) {
   return { words, flags }
 }
 
+function threadMediaItems(value) {
+  if (value === undefined) return undefined
+  return asArray(value).map((entry) => {
+    const match = /^(\d+):(.+)$/.exec(entry)
+    if (!match)
+      throw new CliError(
+        '--media-item must use the format <body-index>:<asset-id>.',
+        { exitCode: 2 }
+      )
+    return { asset_id: match[2], item_index: Number(match[1]) }
+  })
+}
+
 function matchCommand(words) {
   for (let length = Math.min(words.length, 5); length > 0; length -= 1) {
     const command = words.slice(0, length).join(' ')
@@ -243,6 +256,10 @@ function fillPath(template, workspace, positionals) {
 
 async function requestBody(operation, parsed, io) {
   const flags = parsed.flags
+  if (flags.media !== undefined && flags['media-item'] !== undefined)
+    throw new CliError('Use --media or --media-item, not both.', {
+      exitCode: 2,
+    })
   let body = flags.file ? await readJsonInput(flags.file, io.stdin) : undefined
   if (body === undefined && operation.body) body = {}
   if (body === undefined) return undefined
@@ -257,6 +274,7 @@ async function requestBody(operation, parsed, io) {
   set(body, 'headline', flags.headline)
   set(body, 'body', flags.body === undefined ? undefined : asArray(flags.body))
   set(body, 'asset_ids', csv(flags.media))
+  set(body, 'asset_items', threadMediaItems(flags['media-item']))
   set(body, 'slack_channel_id', nullValue(flags['slack-channel']))
   if (operation.id === 'validateAsset') {
     set(body, 'destination_ids', csv(flags.destination))
@@ -292,7 +310,9 @@ async function requestBody(operation, parsed, io) {
               : { channel: requiredFlag(flags, 'channel') }),
             headline: flags.headline ?? null,
             body: asArray(requiredFlag(flags, 'body')),
-            media: csv(flags.media) ?? [],
+            ...(flags['media-item'] !== undefined
+              ? { media_items: threadMediaItems(flags['media-item']) }
+              : { media: csv(flags.media) ?? [] }),
             options: jsonValue(flags.options) ?? null,
           },
         ],
@@ -920,7 +940,7 @@ function helpFor(command) {
     operation.id === 'publishPosts'
       ? ' Include every draft Post in the group. Use --at queue to use the next destination queue slot.'
       : operation.id === 'createPosts'
-        ? ' Use --when queue to use the next destination queue slot. Repeat --body in order to publish a self-reply chain on X, Bluesky, Mastodon, or Threads. Media attaches to the opening post.'
+        ? ' Use --when queue to use the next destination queue slot. Repeat --body in order to publish a self-reply chain on X, Bluesky, Mastodon, or Threads. Repeat --media-item <body-index>:<asset-id> to attach media to a specific item.'
       : operation.id === 'movePostsInQueue'
         ? ' Use --post, --expected-scheduled-at, and --local-date for one Post. Use --file for an atomic multi-Post move.'
       : operation.id === 'patchDestination'

@@ -730,6 +730,52 @@ test('posts create queue uses the Workspace timezone', async () => {
   assert.ok(!Object.hasOwn(body, 'time_zone'))
 })
 
+test('posts create assigns media to a specific thread item', async () => {
+  let body
+  await withApiKey(async () => {
+    const exitCode = await run(
+      [
+        'posts',
+        'create',
+        '--workspace',
+        'ws_1',
+        '--destination',
+        'dst_threads',
+        '--body',
+        'Opening',
+        '--body',
+        'Reply',
+        '--media-item',
+        '1:ast_reply',
+        '--yes',
+        '--json',
+      ],
+      {
+        stdin: process.stdin,
+        stdout: output().stream,
+        stderr: output().stream,
+      },
+      {
+        fetchImpl: async (_url, init) => {
+          body = JSON.parse(init.body)
+          return new Response(
+            JSON.stringify({ object: 'post_set', posts: [] }),
+            {
+              status: 201,
+              headers: { 'content-type': 'application/json' },
+            }
+          )
+        },
+      }
+    )
+    assert.equal(exitCode, 0)
+  })
+  assert.deepEqual(body.posts[0].media_items, [
+    { asset_id: 'ast_reply', item_index: 1 },
+  ])
+  assert.equal('media' in body.posts[0], false)
+})
+
 test('posts publish composes a same-Post publication request', async () => {
   let body
   await withApiKey(async () => {
