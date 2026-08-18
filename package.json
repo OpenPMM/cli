@@ -4,7 +4,7 @@
   "description": "First-party CLI for the OpenPMM public API",
   "type": "module",
   "bin": {
-    "openpmm": "src/openpmm.js"
+    "openpmm": "src/bin.js"
   },
   "files": [
     "src",
