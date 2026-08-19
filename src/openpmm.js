@@ -1032,6 +1032,8 @@ function helpFor(command) {
       ? ' Include every draft Post in the group. Use --at queue to use the next destination queue slot.'
       : operation.id === 'createPosts'
         ? ' Use --when queue to use the next destination queue slot. Repeat --body in order to publish a self-reply chain on X, Bluesky, Mastodon, or Threads. Repeat --media-item <body-index>:<asset-id> to attach media to a specific item.'
+      : operation.id === 'patchPost'
+        ? ' You can change copy and publishing options on a draft or scheduled Post. Cancel a schedule before you change assets or thread structure.'
       : operation.id === 'movePostsInQueue'
         ? ' Use --post, --expected-scheduled-at, and --local-date for one Post. Use --file for an atomic multi-Post move.'
       : operation.id === 'patchDestination'
