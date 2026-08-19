@@ -190,6 +190,8 @@ test('billing help explains the trial and payment confirmation', async () => {
   )
   assert.match(subscribe.read(), /Required scope: billing:write/)
   assert.match(subscribe.read(), /Use --interval month or --interval year/)
+  assert.match(subscribe.read(), /Signup starts the 14-day trial automatically/)
+  assert.match(subscribe.read(), /start paid service immediately and unlock X/)
   assert.match(subscribe.read(), /Requires --yes/)
 
   assert.equal(
@@ -200,7 +202,8 @@ test('billing help explains the trial and payment confirmation', async () => {
     }),
     0
   )
-  assert.match(convert.read(), /Add a payment method with billing portal/)
+  assert.match(convert.read(), /only for legacy Stripe-hosted trials/)
+  assert.match(convert.read(), /New trials use billing subscribe/)
 })
 
 test('webhook verification help explains the local security check', async () => {

@@ -970,9 +970,9 @@ function helpFor(command) {
       : operation.id === 'createDestinationConnectionSession'
         ? ' Bluesky requires --account <handle-or-did>. Mastodon requires --instance-origin <url>.'
       : operation.id === 'createBillingCheckoutSession'
-        ? ' Use --interval month or --interval year. Open the returned URL to start the 14-day trial.'
+        ? ' Use --interval month or --interval year. Signup starts the 14-day trial automatically. Open the returned URL to start paid service immediately and unlock X.'
       : operation.id === 'convertBillingTrial'
-        ? ' Add a payment method with billing portal before you run this command.'
+        ? ' This command is only for legacy Stripe-hosted trials. New trials use billing subscribe.'
       : ''
   return `${command}\n\n${operationTitle(operation)} through the public API.\nCalls ${operation.method} ${operation.path}.\nRequired scope: ${scopeFor(operation)}\nWorkspace: ${operation.path.includes('{workspace_id}') ? 'required' : 'not required'}\nSide effects: ${sideEffects}\nInput: common flags or --file <request.json>; use --file - for stdin.${inputNote}\nOutput: human by default; --json, -json, --jsonl (lists), or --quiet.\nRelevant exits: 0 success, 2 input, 3 auth, 4 scope, 5 not found, 6 conflict, 7 validation, 8 unavailable, 9 ambiguous, 10 confirmation.\n\nExample:\n  openpmm ${command} ${positional} ${operation.path.includes('{workspace_id}') ? '--workspace ws_01JABCDEF ' : ''}${operation.body ? '--file request.json ' : ''}${confirmation ? '--yes ' : ''}--json\n`
 }
