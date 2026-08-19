@@ -272,6 +272,7 @@ async function requestBody(operation, parsed, io) {
   set(body, 'confirmation', flags.confirmation)
   set(body, 'email', flags.email)
   set(body, 'workspace_name', flags['workspace-name'])
+  set(body, 'interval', flags.interval)
   set(body, 'message', flags.message)
   set(body, 'enabled_channels', csv(flags['enabled-channels']))
   set(body, 'headline', flags.headline)
@@ -943,7 +944,13 @@ function helpFor(command) {
     .join(' ')
   const confirmation = requiresConfirmation(operation)
   const sideEffects = operation.confirm
-    ? 'Requires --yes. This can publish, disconnect, or delete data.'
+    ? operation.id === 'createWorkspace'
+      ? 'Requires --yes. This can charge a prorated Workspace subscription amount immediately.'
+      : operation.id === 'cancelWorkspaceSubscription'
+        ? 'Requires --yes. This schedules Workspace subscription cancellation at the paid term end.'
+        : operation.path.startsWith('/billing')
+          ? 'Requires --yes. This can start or charge a subscription.'
+          : 'Requires --yes. This can publish, disconnect, or delete data.'
     : operation.id === 'createPosts'
       ? 'Requires --yes unless the request creates a draft.'
       : 'No extra confirmation.'
@@ -962,6 +969,10 @@ function helpFor(command) {
         ? ' Use --email and --workspace-name. This command does not require an API key. Open the returned signup_url to finish with Google or an email address and password.'
       : operation.id === 'createDestinationConnectionSession'
         ? ' Bluesky requires --account <handle-or-did>. Mastodon requires --instance-origin <url>.'
+      : operation.id === 'createBillingCheckoutSession'
+        ? ' Use --interval month or --interval year. Signup starts the 14-day trial automatically. Open the returned URL to start paid service immediately and unlock X.'
+      : operation.id === 'convertBillingTrial'
+        ? ' This command is only for legacy Stripe-hosted trials. New trials use billing subscribe.'
       : ''
   return `${command}\n\n${operationTitle(operation)} through the public API.\nCalls ${operation.method} ${operation.path}.\nRequired scope: ${scopeFor(operation)}\nWorkspace: ${operation.path.includes('{workspace_id}') ? 'required' : 'not required'}\nSide effects: ${sideEffects}\nInput: common flags or --file <request.json>; use --file - for stdin.${inputNote}\nOutput: human by default; --json, -json, --jsonl (lists), or --quiet.\nRelevant exits: 0 success, 2 input, 3 auth, 4 scope, 5 not found, 6 conflict, 7 validation, 8 unavailable, 9 ambiguous, 10 confirmation.\n\nExample:\n  openpmm ${command} ${positional} ${operation.path.includes('{workspace_id}') ? '--workspace ws_01JABCDEF ' : ''}${operation.body ? '--file request.json ' : ''}${confirmation ? '--yes ' : ''}--json\n`
 }
@@ -978,8 +989,15 @@ function operationTitle(operation) {
 }
 
 function scopeFor(operation) {
+  if (
+    operation.id === 'createWorkspace' ||
+    operation.id === 'cancelWorkspaceSubscription'
+  )
+    return 'billing:write'
   if (operation.authentication === 'none') return 'none'
   if (operation.id === 'getAccount') return 'none'
+  if (operation.path.startsWith('/billing'))
+    return operation.method === 'GET' ? 'billing:read' : 'billing:write'
   if (operation.id === 'submitFeedback') return 'feedback:write'
   if (
     operation.path.includes('notification') ||
