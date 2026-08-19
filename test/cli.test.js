@@ -716,8 +716,9 @@ test('direct publishing sends confirmation after --yes', async () => {
   assert.equal(body.confirmed, true)
 })
 
-test('updating a draft Post is reversible and does not require --yes', async () => {
+test('updates draft or scheduled Post content without requiring --yes', async () => {
   const methods = []
+  let patchedBody
   await withApiKey(async () => {
     const exitCode = await run(
       [
@@ -728,6 +729,8 @@ test('updating a draft Post is reversible and does not require --yes', async () 
         'ws_1',
         '--body',
         'Updated copy',
+        '--options',
+        '{"channel":"linkedin","visibility":"CONNECTIONS","allowResharing":false}',
         '--json',
       ],
       {
@@ -738,13 +741,17 @@ test('updating a draft Post is reversible and does not require --yes', async () 
       {
         fetchImpl: async (_url, init) => {
           methods.push(init.method)
+          if (init.method === 'PATCH') patchedBody = JSON.parse(init.body)
           return init.method === 'GET'
-              ? new Response(JSON.stringify({ object: 'post' }), {
-                headers: {
-                  'content-type': 'application/json',
-                  etag: '"post:post_1:1"',
-                },
-              })
+            ? new Response(
+                JSON.stringify({ object: 'post', state: 'scheduled' }),
+                {
+                  headers: {
+                    'content-type': 'application/json',
+                    etag: '"post:post_1:1"',
+                  },
+                }
+              )
             : new Response(JSON.stringify({ object: 'post' }), {
                 headers: { 'content-type': 'application/json' },
               })
@@ -754,6 +761,14 @@ test('updating a draft Post is reversible and does not require --yes', async () 
     assert.equal(exitCode, 0)
   })
   assert.deepEqual(methods, ['GET', 'PATCH'])
+  assert.deepEqual(patchedBody, {
+    body: ['Updated copy'],
+    options: {
+      channel: 'linkedin',
+      visibility: 'CONNECTIONS',
+      allowResharing: false,
+    },
+  })
 })
 
 test('JSON output stays on stdout and diagnostics stay on stderr', async () => {
