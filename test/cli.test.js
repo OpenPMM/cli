@@ -44,11 +44,146 @@ test('every operation has one unique, guessable command and a /v1-safe path', ()
   for (const operation of OPERATIONS) {
     assert.match(
       operation.command,
-      /^[a-z]+(?:-[a-z]+)*(?: [a-z]+(?:-[a-z]+)*)+$/
+      /^[a-z]+(?:-[a-z]+)*(?: (?:--)?[a-z]+(?:-[a-z]+)*)+$/
     )
     assert.ok(operation.path.startsWith('/'))
     assert.ok(!operation.path.startsWith('/api/'))
   }
+})
+
+test('analytics selects post and group resources without private routes', async () => {
+  const requests = []
+  await withApiKey(async () => {
+    for (const args of [
+      ['analytics', 'show', '--post', 'post_1'],
+      ['analytics', 'show', '--group', 'launch group'],
+    ]) {
+      const exitCode = await run(
+        [...args, '--workspace', 'ws_1', '--json'],
+        {
+          stdin: process.stdin,
+          stdout: output().stream,
+          stderr: output().stream,
+        },
+        {
+          fetchImpl: async (url) => {
+            requests.push(String(url))
+            return new Response(JSON.stringify({ object: 'analytics' }), {
+              headers: { 'content-type': 'application/json' },
+            })
+          },
+        }
+      )
+      assert.equal(exitCode, 0)
+    }
+  })
+  assert.deepEqual(requests, [
+    'https://api.openpmm.com/v1/workspaces/ws_1/analytics/posts/post_1',
+    'https://api.openpmm.com/v1/workspaces/ws_1/analytics/post-groups/launch%20group',
+  ])
+})
+
+test('analytics report sends a bounded publication-cohort query', async () => {
+  let requestUrl
+  await withApiKey(async () => {
+    const exitCode = await run(
+      [
+        'analytics',
+        'report',
+        '--workspace',
+        'ws_1',
+        '--from',
+        '2026-08-01',
+        '--until',
+        '2026-08-08',
+        '--bucket',
+        'week',
+        '--channel',
+        'linkedin',
+        '--limit',
+        '25',
+        '--json',
+      ],
+      {
+        stdin: process.stdin,
+        stdout: output().stream,
+        stderr: output().stream,
+      },
+      {
+        fetchImpl: async (url) => {
+          requestUrl = String(url)
+          return new Response(JSON.stringify({ data: [] }), {
+            headers: { 'content-type': 'application/json' },
+          })
+        },
+      }
+    )
+    assert.equal(exitCode, 0)
+  })
+  const url = new URL(requestUrl)
+  assert.equal(
+    url.pathname,
+    '/v1/workspaces/ws_1/analytics'
+  )
+  assert.deepEqual(Object.fromEntries(url.searchParams), {
+    from: '2026-08-01',
+    until: '2026-08-08',
+    bucket: 'week',
+    channel: 'linkedin',
+    limit: '25',
+  })
+})
+
+test('analytics refresh returns immediately or waits for current values', async () => {
+  const calls = []
+  const sleeps = []
+  const stdout = output()
+  await withApiKey(async () => {
+    const exitCode = await run(
+      [
+        'analytics',
+        'refresh',
+        '--post',
+        'post_1',
+        '--workspace',
+        'ws_1',
+        '--idempotency-key',
+        'analytics_test_1',
+        '--wait',
+        '--json',
+      ],
+      { stdin: process.stdin, stdout: stdout.stream, stderr: output().stream },
+      {
+        sleep: async (milliseconds) => sleeps.push(milliseconds),
+        fetchImpl: async (url, init) => {
+          calls.push({ url: String(url), method: init.method, headers: init.headers })
+          if (init.method === 'POST')
+            return new Response(
+              JSON.stringify({ object: 'post_analytics', state: 'pending' }),
+              {
+                status: 202,
+                headers: {
+                  'content-type': 'application/json',
+                  location: '/v1/workspaces/ws_1/analytics/posts/post_1',
+                },
+              }
+            )
+          return new Response(
+            JSON.stringify({ object: 'post_analytics', state: 'ready', metrics: { comments: 4 } }),
+            { headers: { 'content-type': 'application/json' } }
+          )
+        },
+      }
+    )
+    assert.equal(exitCode, 0)
+  })
+  assert.deepEqual(sleeps, [2_000])
+  assert.equal(calls.length, 2)
+  assert.equal(calls[0].headers['Idempotency-Key'], 'analytics_test_1')
+  assert.equal(calls[1].url, 'https://api.openpmm.com/v1/workspaces/ws_1/analytics/posts/post_1')
+  const rendered = JSON.parse(stdout.read())
+  assert.equal(rendered.data.metrics.comments, 4)
+  assert.equal(rendered.meta.waited, true)
 })
 
 test('transport sends clean public API requests and parses request IDs', async () => {

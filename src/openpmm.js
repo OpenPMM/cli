@@ -38,8 +38,14 @@ export async function run(
   try {
     const parsed = parseArguments(argv)
     if (parsed.flags.version) return write(io.stdout, `${VERSION}\n`)
-    if (parsed.words.length === 0 || parsed.flags.help)
-      return write(io.stdout, helpFor(parsed.words.join(' ')))
+    if (parsed.words.length === 0) return write(io.stdout, helpFor(''))
+    if (parsed.flags.help) {
+      const analytics = matchAnalyticsCommand(parsed, false)
+      return write(
+        io.stdout,
+        helpFor(analytics?.operation.command ?? parsed.words.join(' '))
+      )
+    }
 
     const special = parsed.words.slice(0, 2).join(' ')
     if (special === 'auth login') return await authLogin(parsed, io)
@@ -58,7 +64,9 @@ export async function run(
       ? special
       : null
 
-    const match = assetWorkflow ? null : matchCommand(parsed.words)
+    const match = assetWorkflow
+      ? null
+      : (matchAnalyticsCommand(parsed) ?? matchCommand(parsed.words))
     if (!match && !assetWorkflow)
       throw new CliError(
         `Unknown command: ${parsed.words.join(' ')}. Run \`openpmm --help\` to see commands.`,
@@ -158,12 +166,24 @@ export async function run(
       autoPage: !parsed.flags.after,
       maxItems: positiveIntegerFlag(parsed.flags.limit, 'limit'),
     })
+    const waited =
+      parsed.flags.wait &&
+      ['refreshPostAnalytics', 'refreshPostGroupAnalytics'].includes(
+        match.operation.id
+      )
+        ? await waitForAnalytics(
+            transport,
+            result,
+            dependencies.sleep ?? defaultSleep
+          )
+        : null
     const output = {
-      data: result.data,
+      data: waited?.data ?? result.data,
       meta: {
         request_id: result.requestId,
         idempotency_key: idempotencyKey,
         operation_id: match.operation.id,
+        ...(waited ? { waited: true } : {}),
       },
     }
     renderSuccess(output, parsed.flags, io)
@@ -208,6 +228,7 @@ function parseArguments(argv) {
         'dry-run',
         'with-token',
         'no-color',
+        'wait',
       ].includes(name)
     ) {
       flags[name] = inline === undefined ? true : inline !== 'false'
@@ -242,6 +263,24 @@ function matchCommand(words) {
     if (operation) return { operation, positionals: words.slice(length) }
   }
   return null
+}
+
+function matchAnalyticsCommand(parsed, requireSelector = true) {
+  const command = parsed.words.slice(0, 2).join(' ')
+  if (!['analytics show', 'analytics refresh'].includes(command)) return null
+  const selectors = ['post', 'group'].filter(
+    (name) => parsed.flags[name] !== undefined
+  )
+  if (selectors.length !== 1) {
+    if (!requireSelector) return null
+    throw new CliError(
+      `Use exactly one of --post <id> or --group <group> with ${command}.`,
+      { exitCode: 2 }
+    )
+  }
+  const selector = selectors[0]
+  const operation = OPERATION_BY_COMMAND.get(`${command} --${selector}`)
+  return { operation, positionals: [parsed.flags[selector]] }
 }
 
 function fillPath(template, workspace, positionals) {
@@ -422,6 +461,28 @@ async function requestAll(transport, operation, input) {
       next_cursor: cursor,
     },
   }
+}
+
+function defaultSleep(milliseconds) {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds))
+}
+
+async function waitForAnalytics(transport, refreshResult, sleep) {
+  const location = refreshResult.headers.get('location')
+  if (!location) return null
+  const parsed = new URL(location, 'https://api.openpmm.invalid')
+  const path = parsed.pathname.replace(/^\/v1(?=\/)/, '')
+  let latest = null
+  for (const delay of [2_000, 5_000, 10_000]) {
+    await sleep(delay)
+    latest = await transport.request({ method: 'GET', path })
+    const data = latest.data
+    const pending = Array.isArray(data?.posts)
+      ? data.posts.some((post) => ['pending', 'running'].includes(post.state))
+      : ['pending', 'running'].includes(data?.state)
+    if (!pending) return latest
+  }
+  return latest
 }
 
 async function uploadAsset(transport, workspace, parsed, io) {
@@ -676,6 +737,12 @@ function contentTypeFor(fileName) {
 }
 
 function queryFrom(flags, operation) {
+  if (operation.id === 'getAnalyticsReport') {
+    requiredFlag(flags, 'from')
+    requiredFlag(flags, 'until')
+    if (flags.bucket !== undefined && !['day', 'week'].includes(flags.bucket))
+      throw new CliError('--bucket must be day or week.', { exitCode: 2 })
+  }
   const pageSize = positiveIntegerFlag(
     flags['page-size'] ?? flags.limit,
     flags['page-size'] === undefined ? 'limit' : 'page-size'
@@ -684,8 +751,14 @@ function queryFrom(flags, operation) {
     ...(operation.paginated ? ['after'] : []),
     ...(operation.id === 'listPosts' ? ['view', 'channel', 'group'] : []),
     ...(operation.id === 'getAsset' ? ['include'] : []),
+    ...(operation.id === 'getAnalyticsReport'
+      ? ['from', 'until', 'channel', 'after', 'limit']
+      : []),
   ]
   return {
+    ...(operation.id === 'getAnalyticsReport'
+      ? { bucket: flags.bucket ?? 'day' }
+      : {}),
     ...(operation.paginated && pageSize ? { limit: pageSize } : {}),
     ...Object.fromEntries(
       names.flatMap((name) =>
@@ -973,6 +1046,12 @@ function helpFor(command) {
         ? ' Use --interval month or --interval year. Signup starts the 14-day trial automatically. Open the returned URL to start paid service immediately and unlock X.'
       : operation.id === 'convertBillingTrial'
         ? ' This command is only for legacy Stripe-hosted trials. New trials use billing subscribe.'
+      : operation.id === 'getAnalyticsReport'
+        ? ' Use --from <date>, --until <date>, and --bucket day|week. Use --channel to filter the report.'
+      : ['getPostAnalytics', 'refreshPostAnalytics'].includes(operation.id)
+        ? ' Use --post <id>. Refresh returns after OpenPMM accepts or coalesces the request. Add --wait to poll for a bounded time.'
+      : ['getPostGroupAnalytics', 'refreshPostGroupAnalytics'].includes(operation.id)
+        ? ' Use --group <group>. Refresh returns per-Post outcomes. Add --wait to poll for a bounded time.'
       : ''
   return `${command}\n\n${operationTitle(operation)} through the public API.\nCalls ${operation.method} ${operation.path}.\nRequired scope: ${scopeFor(operation)}\nWorkspace: ${operation.path.includes('{workspace_id}') ? 'required' : 'not required'}\nSide effects: ${sideEffects}\nInput: common flags or --file <request.json>; use --file - for stdin.${inputNote}\nOutput: human by default; --json, -json, --jsonl (lists), or --quiet.\nRelevant exits: 0 success, 2 input, 3 auth, 4 scope, 5 not found, 6 conflict, 7 validation, 8 unavailable, 9 ambiguous, 10 confirmation.\n\nExample:\n  openpmm ${command} ${positional} ${operation.path.includes('{workspace_id}') ? '--workspace ws_01JABCDEF ' : ''}${operation.body ? '--file request.json ' : ''}${confirmation ? '--yes ' : ''}--json\n`
 }
