@@ -177,6 +177,32 @@ test('signup help states the anonymous browser handoff', async () => {
   assert.match(stdout.read(), /Google or an email address and password/)
 })
 
+test('billing help explains the trial and payment confirmation', async () => {
+  const subscribe = output()
+  const convert = output()
+  assert.equal(
+    await run(['billing', 'subscribe', '--help'], {
+      stdin: process.stdin,
+      stdout: subscribe.stream,
+      stderr: output().stream,
+    }),
+    0
+  )
+  assert.match(subscribe.read(), /Required scope: billing:write/)
+  assert.match(subscribe.read(), /Use --interval month or --interval year/)
+  assert.match(subscribe.read(), /Requires --yes/)
+
+  assert.equal(
+    await run(['billing', 'convert-trial', '--help'], {
+      stdin: process.stdin,
+      stdout: convert.stream,
+      stderr: output().stream,
+    }),
+    0
+  )
+  assert.match(convert.read(), /Add a payment method with billing portal/)
+})
+
 test('webhook verification help explains the local security check', async () => {
   const stdout = output()
   const exitCode = await run(['webhooks', 'verify', '--help'], {

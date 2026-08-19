@@ -193,7 +193,8 @@ listing, status, and tests remain Workspace-scoped.
 
 | Group | Examples |
 | --- | --- |
-| Account and workspaces | `accounts show`, `workspaces list`, `workspaces create` |
+| Account and workspaces | `accounts show`, `workspaces list`, `workspaces create`, `workspaces cancel-subscription` |
+| Billing | `billing show`, `billing subscribe`, `billing portal`, `billing convert-trial` |
 | Team | `team members list`, `team invitations create` |
 | Posts | `posts create`, `posts list`, `posts update`, `posts publish` |
 | Assets | `assets list`, `assets upload`, `assets validate`, `assets download` |

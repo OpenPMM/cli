@@ -186,6 +186,110 @@ test('Slack connection starts at Account scope without a Workspace selector', as
   )
 })
 
+test('billing subscribe sends the interval, confirmation, and idempotency key', async () => {
+  let seen
+  await withApiKey(async () => {
+    const exitCode = await run(
+      [
+        'billing',
+        'subscribe',
+        '--interval',
+        'year',
+        '--idempotency-key',
+        'billing_test_1',
+        '--yes',
+        '--json',
+      ],
+      { stdin: process.stdin, stdout: output().stream, stderr: output().stream },
+      {
+        fetchImpl: async (url, init) => {
+          seen = {
+            url: String(url),
+            headers: init.headers,
+            body: JSON.parse(init.body),
+          }
+          return new Response(
+            JSON.stringify({
+              object: 'billing_checkout_session',
+              url: 'https://checkout.stripe.com/test',
+            }),
+            { status: 201, headers: { 'content-type': 'application/json' } }
+          )
+        },
+      }
+    )
+    assert.equal(exitCode, 0)
+  })
+  assert.equal(seen.url, 'https://api.openpmm.com/v1/billing/checkout-sessions')
+  assert.equal(seen.headers['Idempotency-Key'], 'billing_test_1')
+  assert.deepEqual(seen.body, { interval: 'year', confirmed: true })
+})
+
+test('workspace creation requires confirmation before a prorated charge', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'openpmm-cli-'))
+  const requestPath = join(directory, 'workspace.json')
+  await writeFile(
+    requestPath,
+    JSON.stringify({ name: 'Product Marketing', time_zone: 'Europe/Berlin' })
+  )
+  let seen
+  await withApiKey(async () => {
+    const rejected = await run(
+      ['workspaces', 'create', '--file', requestPath],
+      {
+        stdin: process.stdin,
+        stdout: output().stream,
+        stderr: output().stream,
+      },
+      {
+        fetchImpl: async () => {
+          throw new Error('The API must not be called without --yes.')
+        },
+      }
+    )
+    assert.equal(rejected, 10)
+
+    const accepted = await run(
+      [
+        'workspaces',
+        'create',
+        '--file',
+        requestPath,
+        '--idempotency-key',
+        'workspace_test_1',
+        '--yes',
+        '--json',
+      ],
+      {
+        stdin: process.stdin,
+        stdout: output().stream,
+        stderr: output().stream,
+      },
+      {
+        fetchImpl: async (url, init) => {
+          seen = {
+            url: String(url),
+            headers: init.headers,
+            body: JSON.parse(init.body),
+          }
+          return new Response(
+            JSON.stringify({ id: 'ws_created', object: 'workspace' }),
+            { status: 201, headers: { 'content-type': 'application/json' } }
+          )
+        },
+      }
+    )
+    assert.equal(accepted, 0)
+  })
+  assert.equal(seen.url, 'https://api.openpmm.com/v1/workspaces')
+  assert.equal(seen.headers['Idempotency-Key'], 'workspace_test_1')
+  assert.deepEqual(seen.body, {
+    name: 'Product Marketing',
+    time_zone: 'Europe/Berlin',
+    confirmed: true,
+  })
+})
+
 test('media validation sends destination IDs through the public API', async () => {
   let seen
   const stdout = output()
