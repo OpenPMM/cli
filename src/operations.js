@@ -10,6 +10,7 @@ export const OPERATIONS = [
   op('createBillingPortalSession', 'billing portal', 'POST', '/billing/portal-sessions', { idempotent: true }),
   op('convertBillingTrial', 'billing convert-trial', 'POST', '/billing/trial-conversion', { body: true, idempotent: true, confirm: true }),
   op('listWorkspaces', 'workspaces list', 'GET', '/workspaces', { paginated: true }),
+  op('previewWorkspaceCreation', 'workspaces preview-create', 'GET', '/workspace-creation-preview'),
   op('createWorkspace', 'workspaces create', 'POST', '/workspaces', { body: true, idempotent: true, confirm: true }),
   op('getWorkspace', 'workspaces show', 'GET', '/workspaces/{workspace_id}'),
   op('patchWorkspace', 'workspaces update', 'PATCH', '/workspaces/{workspace_id}', { body: true, ifMatch: 'workspace' }),

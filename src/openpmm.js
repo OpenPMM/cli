@@ -74,7 +74,11 @@ export async function run(
       )
     if (parsed.flags.help)
       return write(io.stdout, helpFor(assetWorkflow ?? match.operation.command))
-    if (match?.operation.confirm && !parsed.flags.yes)
+    if (
+      match?.operation.confirm &&
+      match.operation.id !== 'createWorkspace' &&
+      !parsed.flags.yes
+    )
       throw new CliError(
         `This command can publish, disconnect, or delete data. Review it, then rerun with --yes.`,
         { code: 'confirmation_required', exitCode: 10 }
@@ -129,6 +133,33 @@ export async function run(
     const path = fillPath(match.operation.path, workspace, match.positionals)
     let body = await requestBody(match.operation, parsed, io)
     let etag = parsed.flags.etag
+
+    if (match.operation.id === 'createWorkspace') {
+      const previewResult = await transport.request({
+        method: 'GET',
+        path: '/workspace-creation-preview',
+      })
+      const preview = previewResult.data
+      renderWorkspaceChargePreview(preview, parsed.flags, io)
+      if (!parsed.flags.yes)
+        throw new CliError(
+          'Review the Workspace charge, then rerun with --yes.',
+          {
+            code: 'confirmation_required',
+            exitCode: 10,
+            details: preview,
+          }
+        )
+      if (preview.charge_required)
+        body.billing_preview = {
+          currency: preview.currency,
+          amount_due: preview.amount_due,
+          recurring_amount: preview.recurring_amount,
+          interval: preview.interval,
+          current_workspace_quantity: preview.current_workspace_quantity,
+          new_workspace_quantity: preview.new_workspace_quantity,
+        }
+    }
 
     if (match.operation.id === 'createPosts' && body?.when !== 'draft') {
       if (!parsed.flags.yes)
@@ -960,6 +991,31 @@ function renderSuccess(output, flags, io) {
   write(io.stdout, `${JSON.stringify(output.data, null, 2)}\n`)
 }
 
+function renderWorkspaceChargePreview(preview, flags, io) {
+  if (flags.quiet || flags.json || flags.jsonl) return
+  if (!preview.charge_required) {
+    write(io.stdout, 'No subscription charge is required for this Account.\n')
+    return
+  }
+  const due = formatCurrencyAmount(preview.amount_due, preview.currency)
+  const recurring = formatCurrencyAmount(
+    preview.recurring_amount,
+    preview.currency
+  )
+  const period = preview.interval === 'year' ? 'year' : 'month'
+  write(
+    io.stdout,
+    `Workspace charge preview:\n  Due now: ${due}\n  New ${period === 'year' ? 'annual' : 'monthly'} total: ${recurring}/${period}\n  Workspace quantity: ${preview.current_workspace_quantity} → ${preview.new_workspace_quantity}\n`
+  )
+}
+
+function formatCurrencyAmount(amount, currency) {
+  return new Intl.NumberFormat(undefined, {
+    style: 'currency',
+    currency: String(currency).toUpperCase(),
+  }).format(Number(amount) / 100)
+}
+
 function renderError(error, flags, io) {
   const payload = {
     code: error.code,
@@ -1048,6 +1104,8 @@ function helpFor(command) {
         ? ' Use --interval month or --interval year. Signup starts the 14-day trial automatically. Open the returned URL to start paid service immediately and unlock X.'
       : operation.id === 'convertBillingTrial'
         ? ' This command is only for legacy Stripe-hosted trials. New trials use billing subscribe.'
+      : operation.id === 'previewWorkspaceCreation'
+        ? ' Use this before workspaces create to inspect the exact prorated charge and new recurring total.'
       : operation.id === 'getAnalyticsReport'
         ? ' Use --from <date>, --until <date>, and --bucket day|week. Use --channel to filter the report.'
       : ['getPostAnalytics', 'refreshPostAnalytics'].includes(operation.id)
@@ -1072,6 +1130,7 @@ function operationTitle(operation) {
 function scopeFor(operation) {
   if (
     operation.id === 'createWorkspace' ||
+    operation.id === 'previewWorkspaceCreation' ||
     operation.id === 'cancelWorkspaceSubscription'
   )
     return 'billing:write'
