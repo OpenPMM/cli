@@ -35,8 +35,10 @@ export async function run(
   dependencies = {}
 ) {
   let recoveryKey = null
+  let flags = {}
   try {
     const parsed = parseArguments(argv)
+    flags = parsed.flags
     if (parsed.flags.version) return write(io.stdout, `${VERSION}\n`)
     if (parsed.words.length === 0) return write(io.stdout, helpFor(''))
     if (parsed.flags.help) {
@@ -287,10 +289,92 @@ export async function run(
             error instanceof Error ? error.message : 'The command failed.'
           )
     normalized.idempotencyKey = recoveryKey
-    renderError(normalized, parseArguments(argv).flags, io)
+    renderError(normalized, flags, io)
     return normalized.exitCode
   }
 }
+
+// Flags that never take a value. Presence means true; `--flag=false` means false.
+const BOOLEAN_FLAGS = new Set([
+  'help',
+  'version',
+  'json',
+  'jsonl',
+  'quiet',
+  'yes',
+  'deferred',
+  'dry-run',
+  'with-token',
+  'no-color',
+  'wait',
+  'authorize-cli',
+  'no-open',
+  'no-wait',
+  'resume',
+])
+
+// Flags that carry a value. Keep in sync with every flag the CLI reads in
+// requestBody, queryFrom, uploadAsset, authLogin, and verifyWebhookSignature.
+// Adding a new flag anywhere means adding its name here, or the parser rejects
+// it as unknown.
+const VALUE_FLAGS = new Set([
+  'account',
+  'after',
+  'api-base-url',
+  'at',
+  'body',
+  'bucket',
+  'channel',
+  'confirmation',
+  'content-mode',
+  'content-type',
+  'default',
+  'destination',
+  'destination-filter',
+  'destinations',
+  'device-name',
+  'email',
+  'enabled',
+  'enabled-channels',
+  'etag',
+  'events',
+  'expected-scheduled-at',
+  'file',
+  'from',
+  'group',
+  'headline',
+  'idempotency-key',
+  'include',
+  'instance-origin',
+  'interval',
+  'kind',
+  'limit',
+  'local-date',
+  'media',
+  'media-item',
+  'message',
+  'name',
+  'options',
+  'output',
+  'page-size',
+  'post',
+  'post-version',
+  'provider',
+  'queue-policy',
+  'secret-file',
+  'signature',
+  'slack-channel',
+  'time-zone',
+  'tolerance-seconds',
+  'until',
+  'url',
+  'view',
+  'when',
+  'workspace',
+  'workspace-name',
+])
+
+const KNOWN_FLAGS = new Set([...BOOLEAN_FLAGS, ...VALUE_FLAGS])
 
 function parseArguments(argv) {
   const flags = {}
@@ -307,25 +391,12 @@ function parseArguments(argv) {
     }
     const raw = argument.replace(/^--?/, '')
     const [name, inline] = raw.split(/=(.*)/s, 2)
-    if (
-      [
-        'help',
-        'version',
-        'json',
-        'jsonl',
-        'quiet',
-        'yes',
-        'deferred',
-        'dry-run',
-        'with-token',
-        'no-color',
-        'wait',
-        'authorize-cli',
-        'no-open',
-        'no-wait',
-        'resume',
-      ].includes(name)
-    ) {
+    if (!KNOWN_FLAGS.has(name))
+      throw new CliError(
+        `Unknown flag --${name}. Run \`openpmm <command> --help\` to see accepted flags.`,
+        { exitCode: 2 }
+      )
+    if (BOOLEAN_FLAGS.has(name)) {
       flags[name] = inline === undefined ? true : inline !== 'false'
       continue
     }
@@ -1343,14 +1414,14 @@ function renderDestinationList(values, stream) {
 function renderPostList(values, stream) {
   write(stream, 'ID\tCHANNEL\tSTATE\tBODY\n')
   for (const value of values) {
-    const body = asArray(value.body ?? '')
+    const body = asArray(value.body ?? value.payload?.body ?? '')
       .filter(Boolean)
       .join(' / ')
       .replace(/\s+/g, ' ')
     const preview = body.length > 80 ? `${body.slice(0, 77)}...` : body
     write(
       stream,
-      `${value.id ?? 'unknown'}\t${value.channel ?? 'unknown'}\t${value.state ?? 'unknown'}\t${preview}\n`
+      `${value.id ?? 'unknown'}\t${value.channel ?? value.payload?.channel ?? 'unknown'}\t${value.state ?? 'unknown'}\t${preview}\n`
     )
   }
 }
@@ -1419,7 +1490,7 @@ function helpFor(command) {
       .map((value) => `  ${value}`)
       .join(
         '\n'
-      )}\n\nGlobal flags:\n  --workspace <id>       Workspace ID. Omit when the key has one Workspace.\n  --api-base-url <url>   Public API origin (or OPENPMM_API_BASE_URL)\n  --file <path|->        Complete JSON request body\n  --json, -json          Stable JSON output\n  --jsonl                One list item per line\n  --limit <count>        Bound total list items\n  --page-size <count>    Control the public API page size\n  --quiet                IDs only\n  --yes                  Confirm publishing or destructive work\n  --help                  Show help\n  --version               Show version\n\nRun openpmm <command> --help for command details.\n`
+      )}\n\nGlobal flags:\n  --workspace <id>       Workspace ID. Omit when the key has one Workspace.\n  --api-base-url <url>   Public API origin (or OPENPMM_API_BASE_URL)\n  --file <path|->        Complete JSON request body\n  --json, -json          Stable JSON output\n  --jsonl                One list item per line\n  --limit <count>        Bound total list items\n  --page-size <count>    Control the public API page size\n  --etag <value>         If-Match value for an update; read automatically when omitted\n  --quiet                IDs only\n  --yes                  Confirm publishing or destructive work\n  --help                  Show help\n  --version               Show version\n\nRun openpmm <command> --help for command details.\n`
   const convenienceHelp = {
     'auth login':
       'openpmm auth login [--no-open] [--no-wait | --resume]\n\nOpen a browser to sign in and authorize the CLI. Use --no-wait for safe agent-readable metadata, then --resume after browser approval. OpenPMM stores the resulting API key and selected Workspace in ~/.config/openpmm/credentials.json with user-only permissions. Use --with-token only to import an existing API key from stdin.\n',
