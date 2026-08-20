@@ -1470,6 +1470,61 @@ test('posts create assigns media to a specific thread item', async () => {
   assert.equal('media' in body.posts[0], false)
 })
 
+test('posts create forwards one Bluesky video and its publishing options', async () => {
+  let body
+  await withApiKey(async () => {
+    const exitCode = await run(
+      [
+        'posts',
+        'create',
+        '--workspace',
+        'ws_1',
+        '--destination',
+        'dst_bluesky',
+        '--body',
+        'Video update',
+        '--media-item',
+        '0:ast_video',
+        '--options',
+        '{"channel":"bluesky","languages":["en"],"contentLabels":[],"altTextByAssetId":{}}',
+        '--yes',
+        '--json',
+      ],
+      {
+        stdin: process.stdin,
+        stdout: output().stream,
+        stderr: output().stream,
+      },
+      {
+        fetchImpl: async (_url, init) => {
+          body = JSON.parse(init.body)
+          return new Response(
+            JSON.stringify({ object: 'post_set', posts: [] }),
+            {
+              status: 201,
+              headers: { 'content-type': 'application/json' },
+            }
+          )
+        },
+      }
+    )
+    assert.equal(exitCode, 0)
+  })
+
+  assert.deepEqual(body.posts[0], {
+    destination_id: 'dst_bluesky',
+    headline: null,
+    body: ['Video update'],
+    media_items: [{ asset_id: 'ast_video', item_index: 0 }],
+    options: {
+      channel: 'bluesky',
+      languages: ['en'],
+      contentLabels: [],
+      altTextByAssetId: {},
+    },
+  })
+})
+
 test('posts publish composes a same-Post publication request', async () => {
   let body
   await withApiKey(async () => {
