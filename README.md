@@ -104,7 +104,7 @@ Publishing is explicit and irreversible. Review the request, then add `--yes`:
 
 ```bash
 openpmm posts publish \
-  --post post_... \
+  --post send_... \
   --post-version 1 \
   --destination dst_... \
   --yes \
@@ -136,7 +136,7 @@ openpmm assets upload video.mp4 \
   --kind reel \
   --json
 
-openpmm assets download asset_... \
+openpmm assets download media_reel_... \
   --output video.mp4
 ```
 
@@ -209,7 +209,9 @@ openpmm posts publish --help
 The CLI is designed for both people and agents:
 
 - Human-readable output is the default.
-- `--json` emits one stable JSON value.
+- `--json` emits one stable JSON value. List results keep `data`, `has_more`,
+  `next_cursor`, and `meta` at the top level; resource results use
+  `{ "data": {...}, "meta": {...} }`.
 - `--jsonl` emits one item per line for list commands.
 - `--quiet` emits IDs only.
 - JSON stays on stdout. Diagnostics stay on stderr.

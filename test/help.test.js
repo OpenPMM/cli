@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
+import { OPERATIONS } from '../src/operations.js'
 import { run } from '../src/openpmm.js'
 
 function output() {
@@ -26,6 +27,9 @@ test('publishing help is a stable, copy-pasteable public contract', async () => 
   assert.equal(
     stdout.read(),
     `posts publish
+
+Usage:
+  openpmm posts publish [flags]
 
 Publish posts through the public API.
 Calls POST /workspaces/{workspace_id}/posts/publish.
@@ -101,6 +105,45 @@ test('destination connection help explains provider-specific inputs', async () =
   assert.equal(exitCode, 0)
   assert.match(stdout.read(), /Bluesky requires --account <handle-or-did>/)
   assert.match(stdout.read(), /Mastodon requires --instance-origin <url>/)
+  assert.match(stdout.read(), /Use --provider <provider>/)
+})
+
+test('every API command help includes a usage line', async () => {
+  for (const operation of OPERATIONS) {
+    if (
+      operation.command === 'auth login' ||
+      operation.command.startsWith('analytics ')
+    )
+      continue
+    const stdout = output()
+    const exitCode = await run(
+      [...operation.command.split(' '), '--help'],
+      {
+        stdin: process.stdin,
+        stdout: stdout.stream,
+        stderr: output().stream,
+      }
+    )
+    assert.equal(exitCode, 0, operation.command)
+    assert.match(stdout.read(), /\nUsage:\n  openpmm /, operation.command)
+  }
+})
+
+test('root help lists logout and logout help identifies its target', async () => {
+  const root = output()
+  const logout = output()
+  await run(['--help'], {
+    stdin: process.stdin,
+    stdout: root.stream,
+    stderr: output().stream,
+  })
+  await run(['auth', 'logout', '--help'], {
+    stdin: process.stdin,
+    stdout: logout.stream,
+    stderr: output().stream,
+  })
+  assert.match(root.read(), /  auth logout\n/)
+  assert.match(logout.read(), /--api-base-url <url>/)
 })
 
 test('Slack help separates Account connection from Workspace settings', async () => {
