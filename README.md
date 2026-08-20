@@ -36,38 +36,37 @@ Node.js 22 or newer is required.
 
 ## Authenticate
 
-Set `OPENPMM_API_KEY` in your shell or CI environment:
+Authorize the CLI in your browser:
 
 ```bash
-export OPENPMM_API_KEY=opm_live_...
+openpmm auth login
 ```
 
-For local development, save a key for the default API URL. Pipe the key so it
-does not appear in shell history:
+OpenPMM stores the credential and approved Workspace in a user-only local file.
+For an agent-friendly flow that returns immediately, use:
 
 ```bash
-printf '%s' "$OPENPMM_API_KEY" | openpmm auth login --with-token
-openpmm auth logout
+openpmm auth login --no-wait --json
+openpmm auth login --resume --json
 ```
 
 Saved credentials live in
 `~/.config/openpmm/credentials.json`. The CLI creates the directory with mode
 `0700`, writes the file with mode `0600`, and refuses to read a file that is
-accessible by other users. Environment variables are useful for CI and always
-take precedence over saved credentials.
+accessible by other users. `OPENPMM_API_KEY` and `auth login --with-token`
+remain available for CI and advanced use. Environment variables always take
+precedence over saved credentials.
 
 ## Quick start
 
 ```bash
-export OPENPMM_API_KEY=opm_live_...
-export OPENPMM_WORKSPACE=ws_...
+openpmm auth login
 
 # Inspect the workspace as machine-readable JSON.
 npx -y @openpmm/cli workspaces list --json
 
 # Create a draft post.
 npx -y @openpmm/cli posts create \
-  --workspace "$OPENPMM_WORKSPACE" \
   --when draft \
   --group launch \
   --channel x \
@@ -76,21 +75,20 @@ npx -y @openpmm/cli posts create \
 
 # List drafts.
 npx -y @openpmm/cli posts list \
-  --workspace "$OPENPMM_WORKSPACE" \
   --view drafts \
   --json
 ```
 
-Every workspace-scoped command accepts `--workspace <id>` or
-`OPENPMM_WORKSPACE`. Use the explicit flag when a script works with more than
-one workspace.
+The browser flow stores the approved Workspace. The CLI also discovers and
+stores the only available Workspace. Every Workspace-scoped command still
+accepts `--workspace <id>` or `OPENPMM_WORKSPACE`; use an explicit value when a
+script works with more than one Workspace.
 
 Repeat `--body` to publish an ordered self-reply chain on X, Bluesky, Mastodon,
 or Threads. Media attaches to the opening post:
 
 ```bash
 openpmm posts create \
-  --workspace "$OPENPMM_WORKSPACE" \
   --destination dst_... \
   --body 'Opening post' \
   --body 'First reply' \
@@ -106,7 +104,6 @@ Publishing is explicit and irreversible. Review the request, then add `--yes`:
 
 ```bash
 openpmm posts publish \
-  --workspace "$OPENPMM_WORKSPACE" \
   --post post_... \
   --post-version 1 \
   --destination dst_... \
@@ -118,13 +115,11 @@ For a complete request body, use a JSON file or stdin:
 
 ```bash
 openpmm posts publish \
-  --workspace "$OPENPMM_WORKSPACE" \
   --file publish.json \
   --yes \
   --json
 
 cat publish.json | openpmm posts publish \
-  --workspace "$OPENPMM_WORKSPACE" \
   --file - \
   --yes \
   --json
@@ -138,12 +133,10 @@ publishing, disconnect, delete, cancel, reschedule, and retry operations require
 
 ```bash
 openpmm assets upload video.mp4 \
-  --workspace "$OPENPMM_WORKSPACE" \
   --kind reel \
   --json
 
 openpmm assets download asset_... \
-  --workspace "$OPENPMM_WORKSPACE" \
   --output video.mp4
 ```
 
@@ -156,7 +149,6 @@ Send product feedback for the active workspace:
 
 ```bash
 openpmm feedback submit \
-  --workspace "$OPENPMM_WORKSPACE" \
   --message 'The scheduled Posts view did not refresh.' \
   --json
 ```
@@ -169,8 +161,8 @@ account email for the API credential creator is the reply-to address.
 List and manage workspace webhook endpoints through the API:
 
 ```bash
-openpmm webhooks list --workspace "$OPENPMM_WORKSPACE" --json
-openpmm webhooks test webhook_... --workspace "$OPENPMM_WORKSPACE" --json
+openpmm webhooks list --json
+openpmm webhooks test webhook_... --json
 ```
 
 Verify a received webhook locally against its exact body bytes. This command

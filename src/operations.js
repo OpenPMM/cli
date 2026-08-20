@@ -4,6 +4,8 @@
  */
 export const OPERATIONS = [
   op('createSignupIntent', 'signup create', 'POST', '/signup-intents', { body: true, authentication: 'none' }),
+  op('createCliAuthorization', 'auth login', 'POST', '/cli-authorizations', { body: true, authentication: 'none' }),
+  op('exchangeCliAuthorization', 'auth login', 'POST', '/cli-authorizations/token', { body: true, authentication: 'none' }),
   op('getAccount', 'accounts show', 'GET', '/account'),
   op('getBilling', 'billing show', 'GET', '/billing'),
   op('createBillingCheckoutSession', 'billing subscribe', 'POST', '/billing/checkout-sessions', { body: true, idempotent: true, confirm: true }),
