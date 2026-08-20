@@ -32,6 +32,73 @@ async function withApiKey(callback) {
   }
 }
 
+test('reported version matches the package version', async () => {
+  const stdout = output()
+  const exitCode = await run(['--version'], {
+    stdin: process.stdin,
+    stdout: stdout.stream,
+    stderr: output().stream,
+  })
+  const packageJson = JSON.parse(
+    await readFile(new URL('../package.json', import.meta.url), 'utf8')
+  )
+  assert.equal(exitCode, 0)
+  assert.equal(stdout.read(), `${packageJson.version}\n`)
+})
+
+test('auth logout reports whether the selected environment had a saved login', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'openpmm-cli-logout-'))
+  const credentialPath = join(directory, 'credentials.json')
+  const empty = output()
+  assert.equal(
+    await run(
+      ['auth', 'logout', '--api-base-url', 'https://api-stg.openpmm.com/v1'],
+      { stdin: process.stdin, stdout: empty.stream, stderr: output().stream },
+      { credentialPath }
+    ),
+    0
+  )
+  assert.equal(
+    empty.read(),
+    'No saved login was found for https://api-stg.openpmm.com/v1.\n'
+  )
+
+  await writeFile(
+    credentialPath,
+    `${JSON.stringify({
+      version: 2,
+      credentials: {
+        'https://api.openpmm.com/v1': 'prod-key',
+        'https://api-stg.openpmm.com/v1': 'staging-key',
+      },
+      workspaces: { 'https://api-stg.openpmm.com/v1': 'ws_staging' },
+      pending: {},
+    })}\n`,
+    { mode: 0o600 }
+  )
+  const removed = output()
+  assert.equal(
+    await run(
+      ['auth', 'logout', '--api-base-url', 'https://api-stg.openpmm.com/v1'],
+      {
+        stdin: process.stdin,
+        stdout: removed.stream,
+        stderr: output().stream,
+      },
+      { credentialPath }
+    ),
+    0
+  )
+  assert.equal(
+    removed.read(),
+    'Removed the saved login for https://api-stg.openpmm.com/v1.\n'
+  )
+  const stored = JSON.parse(await readFile(credentialPath, 'utf8'))
+  assert.equal(stored.credentials['https://api.openpmm.com/v1'], 'prod-key')
+  assert.equal(stored.credentials['https://api-stg.openpmm.com/v1'], undefined)
+  assert.equal(stored.workspaces['https://api-stg.openpmm.com/v1'], undefined)
+})
+
 test('every operation has a unique ID, a guessable command, and a /v1-safe path', () => {
   assert.equal(
     new Set(OPERATIONS.map((operation) => operation.id)).size,
@@ -835,7 +902,7 @@ test('feedback submission sends a message through the public API', async () => {
     message: 'The scheduled Posts view did not refresh.',
   })
   assert.equal(request.init.headers['Idempotency-Key'], 'feedback-request')
-  assert.match(request.init.headers['User-Agent'], /^@openpmm\/cli\/0\.1\.0 /)
+  assert.match(request.init.headers['User-Agent'], /^@openpmm\/cli\/0\.2\.0 /)
   assert.match(stdout.read(), /"feedback"/)
 })
 
@@ -1117,9 +1184,94 @@ test('JSON output stays on stdout and diagnostics stay on stderr', async () => {
     assert.equal(exitCode, 0)
     assert.equal(err.read(), '')
     const parsed = JSON.parse(out.read())
-    assert.equal(parsed.data.data[0].id, 'ws_1')
+    assert.equal(parsed.data[0].id, 'ws_1')
+    assert.equal(parsed.has_more, false)
+    assert.equal(parsed.next_cursor, null)
     assert.equal(parsed.meta.request_id, 'req_1')
   })
+})
+
+test('human destination and Post lists show actionable state', async () => {
+  const destinations = output()
+  const posts = output()
+  await withApiKey(async () => {
+    const destinationExit = await run(
+      ['destinations', 'list', '--workspace', 'ws_1'],
+      {
+        stdin: process.stdin,
+        stdout: destinations.stream,
+        stderr: output().stream,
+      },
+      {
+        fetchImpl: async () =>
+          new Response(
+            JSON.stringify({
+              data: [
+                {
+                  id: 'provider:threads',
+                  provider: 'threads',
+                  connection_state: 'disconnected',
+                  configured: true,
+                  connectable: true,
+                  publishable: false,
+                  guidance: 'Start a connection session.',
+                },
+                {
+                  id: 'provider:x',
+                  provider: 'x',
+                  connection_state: 'disconnected',
+                  configured: true,
+                  connectable: false,
+                  publishable: false,
+                  guidance: 'X is not available during the free trial.',
+                },
+              ],
+              has_more: false,
+              next_cursor: null,
+            }),
+            { headers: { 'content-type': 'application/json' } }
+          ),
+      }
+    )
+    const postExit = await run(
+      ['posts', 'list', '--workspace', 'ws_1', '--view', 'drafts'],
+      {
+        stdin: process.stdin,
+        stdout: posts.stream,
+        stderr: output().stream,
+      },
+      {
+        fetchImpl: async () =>
+          new Response(
+            JSON.stringify({
+              data: [
+                {
+                  id: 'send_1',
+                  channel: 'threads',
+                  state: 'draft',
+                  body: ['A short draft'],
+                },
+              ],
+              has_more: false,
+              next_cursor: null,
+            }),
+            { headers: { 'content-type': 'application/json' } }
+          ),
+      }
+    )
+    assert.equal(destinationExit, 0)
+    assert.equal(postExit, 0)
+  })
+  assert.equal(
+    destinations.read(),
+    'PROVIDER\tSTATE\tACCESS\tDETAIL\n' +
+      'threads\tdisconnected\tconnectable\tStart a connection session.\n' +
+      'x\tdisconnected\tunavailable\tX is not available during the free trial.\n'
+  )
+  assert.equal(
+    posts.read(),
+    'ID\tCHANNEL\tSTATE\tBODY\nsend_1\tthreads\tdraft\tA short draft\n'
+  )
 })
 
 test('posts create composes the public draft operation', async () => {
@@ -1159,6 +1311,33 @@ test('posts create composes the public draft operation', async () => {
   assert.equal(request.body.when, 'draft')
   assert.equal(request.body.group, 'launch')
   assert.equal(request.body.posts[0].channel, 'x')
+})
+
+test('resource show commands accept the same --post selector as publish', async () => {
+  let requestUrl
+  await withApiKey(async () => {
+    const exitCode = await run(
+      ['posts', 'show', '--post', 'send_1', '--workspace', 'ws_1', '--json'],
+      {
+        stdin: process.stdin,
+        stdout: output().stream,
+        stderr: output().stream,
+      },
+      {
+        fetchImpl: async (url) => {
+          requestUrl = String(url)
+          return new Response(JSON.stringify({ id: 'send_1', state: 'draft' }), {
+            headers: { 'content-type': 'application/json' },
+          })
+        },
+      }
+    )
+    assert.equal(exitCode, 0)
+  })
+  assert.equal(
+    requestUrl,
+    'https://api.openpmm.com/v1/workspaces/ws_1/posts/send_1'
+  )
 })
 
 test('posts create preserves repeated body flags for provider threads', async () => {
@@ -1486,7 +1665,7 @@ test('auto-pagination preserves list metadata from the first page', async () => 
     )
     assert.equal(exitCode, 0)
   })
-  const result = JSON.parse(out.read()).data
+  const result = JSON.parse(out.read())
   assert.deepEqual(
     result.data.map((item) => item.id),
     ['one', 'two']

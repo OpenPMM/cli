@@ -1,6 +1,6 @@
 {
   "name": "@openpmm/cli",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "First-party CLI for the OpenPMM public API",
   "type": "module",
   "bin": {

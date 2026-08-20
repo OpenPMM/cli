@@ -19,7 +19,7 @@ import {
   normalizeApiBaseUrl,
 } from './transport.js'
 
-export const VERSION = '0.1.0'
+export const VERSION = '0.2.0'
 const DEFAULT_API_BASE_URL = 'https://api.openpmm.com/v1'
 const ASSET_UPLOAD_PART_SIZE = 8 * 1024 * 1024
 const CREDENTIAL_PATH = join(
@@ -146,7 +146,12 @@ export async function run(
     if (assetWorkflow === 'assets download')
       return await downloadAsset(transport, workspace, parsed, io)
 
-    const path = fillPath(match.operation.path, workspace, match.positionals)
+    const path = fillPath(
+      match.operation.path,
+      workspace,
+      match.positionals,
+      parsed.flags
+    )
     let body = await requestBody(match.operation, parsed, io)
     let etag = parsed.flags.etag
 
@@ -373,10 +378,13 @@ function matchAnalyticsCommand(parsed, requireSelector = true) {
   return { operation, positionals: [parsed.flags[selector]] }
 }
 
-function fillPath(template, workspace, positionals) {
+function fillPath(template, workspace, positionals, flags = {}) {
   let position = 0
   return template.replace(/\{([^}]+)\}/g, (_match, name) => {
-    const value = name === 'workspace_id' ? workspace : positionals[position++]
+    const value =
+      name === 'workspace_id'
+        ? workspace
+        : (positionals[position++] ?? flags[name])
     if (!value)
       throw new CliError(`Missing required <${name}> argument.`, {
         exitCode: 2,
@@ -984,11 +992,19 @@ async function authLogout(parsed, io, dependencies = {}) {
   )
   const credentialPath = dependencies.credentialPath ?? CREDENTIAL_PATH
   const store = await readCredentialStore(credentialPath)
+  const removed =
+    Object.hasOwn(store.credentials, baseUrl) ||
+    Object.hasOwn(store.workspaces, baseUrl) ||
+    Object.hasOwn(store.pending, baseUrl)
+  if (!removed) {
+    write(io.stdout, `No saved login was found for ${baseUrl}.\n`)
+    return 0
+  }
   delete store.credentials[baseUrl]
   delete store.workspaces[baseUrl]
   delete store.pending[baseUrl]
   await writeCredentialStore(store, credentialPath)
-  write(io.stdout, `Removed the saved API key for ${baseUrl}.\n`)
+  write(io.stdout, `Removed the saved login for ${baseUrl}.\n`)
   return 0
 }
 
@@ -1285,9 +1301,14 @@ function renderSuccess(output, flags, io) {
     for (const value of values) write(io.stdout, `${JSON.stringify(value)}\n`)
     return
   }
-  if (flags.json) return write(io.stdout, `${JSON.stringify(output)}\n`)
+  if (flags.json)
+    return write(io.stdout, `${JSON.stringify(jsonSuccessOutput(output))}\n`)
   if (Array.isArray(output.data?.data)) {
     if (output.data.data.length === 0) return write(io.stdout, 'No results.\n')
+    if (output.meta?.operation_id === 'listDestinations')
+      return renderDestinationList(output.data.data, io.stdout)
+    if (output.meta?.operation_id === 'listPosts')
+      return renderPostList(output.data.data, io.stdout)
     for (const value of output.data.data)
       write(
         io.stdout,
@@ -1296,6 +1317,42 @@ function renderSuccess(output, flags, io) {
     return
   }
   write(io.stdout, `${JSON.stringify(output.data, null, 2)}\n`)
+}
+
+function jsonSuccessOutput(output) {
+  if (!Array.isArray(output.data?.data)) return output
+  return { ...output.data, meta: output.meta }
+}
+
+function renderDestinationList(values, stream) {
+  write(stream, 'PROVIDER\tSTATE\tACCESS\tDETAIL\n')
+  for (const value of values) {
+    const access = value.publishable
+      ? 'publishable'
+      : value.connectable
+        ? 'connectable'
+        : 'unavailable'
+    const detail = value.display_name ?? value.guidance ?? ''
+    write(
+      stream,
+      `${value.provider ?? value.channel ?? value.id}\t${value.connection_state ?? 'unknown'}\t${access}\t${detail}\n`
+    )
+  }
+}
+
+function renderPostList(values, stream) {
+  write(stream, 'ID\tCHANNEL\tSTATE\tBODY\n')
+  for (const value of values) {
+    const body = asArray(value.body ?? '')
+      .filter(Boolean)
+      .join(' / ')
+      .replace(/\s+/g, ' ')
+    const preview = body.length > 80 ? `${body.slice(0, 77)}...` : body
+    write(
+      stream,
+      `${value.id ?? 'unknown'}\t${value.channel ?? 'unknown'}\t${value.state ?? 'unknown'}\t${preview}\n`
+    )
+  }
 }
 
 function renderWorkspaceChargePreview(preview, flags, io) {
@@ -1351,8 +1408,9 @@ function renderError(error, flags, io) {
 
 function helpFor(command) {
   if (!command)
-    return `OpenPMM CLI ${VERSION}\n\nUse every OpenPMM customer workflow through the public /v1 API.\n\nCommon path:\n  openpmm signup create --email you@example.com --workspace-name "Product Marketing" --authorize-cli\n  openpmm posts create --when draft --channel x --body "Draft copy"\n  openpmm posts list --view drafts --json\n  openpmm posts publish --post post_... --post-version 1 --destination dst_... --yes\n\nCommands:\n${[
+    return `OpenPMM CLI ${VERSION}\n\nUse every OpenPMM customer workflow through the public /v1 API.\n\nCommon path:\n  openpmm signup create --email you@example.com --workspace-name "Product Marketing" --authorize-cli\n  openpmm posts create --when draft --channel x --body "Draft copy"\n  openpmm posts list --view drafts --json\n  openpmm posts publish --post send_... --post-version 1 --destination dst_... --yes\n\nCommands:\n${[
       ...new Set(OPERATIONS.map((operation) => operation.command)),
+      'auth logout',
       'assets download',
       'assets upload',
       'webhooks verify',
@@ -1365,6 +1423,8 @@ function helpFor(command) {
   const convenienceHelp = {
     'auth login':
       'openpmm auth login [--no-open] [--no-wait | --resume]\n\nOpen a browser to sign in and authorize the CLI. Use --no-wait for safe agent-readable metadata, then --resume after browser approval. OpenPMM stores the resulting API key and selected Workspace in ~/.config/openpmm/credentials.json with user-only permissions. Use --with-token only to import an existing API key from stdin.\n',
+    'auth logout':
+      'openpmm auth logout [--api-base-url <url>]\n\nRemove the saved login for the selected API base URL. The command reports when no saved login exists.\n',
     'assets upload':
       'openpmm assets upload <path> --workspace <id> [--kind card|reel|poster] [--content-type <type>]\n\nCreate an upload session, stream the file to storage, and complete it through public /v1 operations.\n',
     'assets download':
@@ -1408,7 +1468,7 @@ function helpFor(command) {
       : operation.id === 'createSignupIntent'
         ? ' Use --email and --workspace-name. Add --authorize-cli for one browser signup and CLI authorization flow. This command does not require an API key. Finish with Google or an email address and password.'
       : operation.id === 'createDestinationConnectionSession'
-        ? ' Bluesky requires --account <handle-or-did>. Mastodon requires --instance-origin <url>.'
+        ? ' Use --provider <provider>. Bluesky requires --account <handle-or-did>. Mastodon requires --instance-origin <url>.'
       : operation.id === 'createBillingCheckoutSession'
         ? ' Use --interval month or --interval year. Signup starts the 14-day trial automatically. Open the returned URL to start paid service immediately and unlock X.'
       : operation.id === 'convertBillingTrial'
@@ -1422,7 +1482,7 @@ function helpFor(command) {
       : ['getPostGroupAnalytics', 'refreshPostGroupAnalytics'].includes(operation.id)
         ? ' Use --group <group>. Refresh returns per-Post outcomes. Add --wait to poll for a bounded time.'
       : ''
-  return `${command}\n\n${operationTitle(operation)} through the public API.\nCalls ${operation.method} ${operation.path}.\nRequired scope: ${scopeFor(operation)}\nWorkspace: ${operation.path.includes('{workspace_id}') ? 'required' : 'not required'}\nSide effects: ${sideEffects}\nInput: common flags or --file <request.json>; use --file - for stdin.${inputNote}\nOutput: human by default; --json, -json, --jsonl (lists), or --quiet.\nRelevant exits: 0 success, 2 input, 3 auth, 4 scope, 5 not found, 6 conflict, 7 validation, 8 unavailable, 9 ambiguous, 10 confirmation.\n\nExample:\n  openpmm ${command} ${positional} ${operation.path.includes('{workspace_id}') ? '--workspace ws_01JABCDEF ' : ''}${operation.body ? '--file request.json ' : ''}${confirmation ? '--yes ' : ''}--json\n`
+  return `${command}\n\nUsage:\n  openpmm ${command}${positional ? ` ${positional}` : ''} [flags]\n\n${operationTitle(operation)} through the public API.\nCalls ${operation.method} ${operation.path}.\nRequired scope: ${scopeFor(operation)}\nWorkspace: ${operation.path.includes('{workspace_id}') ? 'required' : 'not required'}\nSide effects: ${sideEffects}\nInput: common flags or --file <request.json>; use --file - for stdin.${inputNote}\nOutput: human by default; --json, -json, --jsonl (lists), or --quiet.\nRelevant exits: 0 success, 2 input, 3 auth, 4 scope, 5 not found, 6 conflict, 7 validation, 8 unavailable, 9 ambiguous, 10 confirmation.\n\nExample:\n  openpmm ${command} ${positional} ${operation.path.includes('{workspace_id}') ? '--workspace ws_01JABCDEF ' : ''}${operation.body ? '--file request.json ' : ''}${confirmation ? '--yes ' : ''}--json\n`
 }
 
 function requiresConfirmation(operation) {
