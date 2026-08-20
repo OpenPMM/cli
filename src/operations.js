@@ -63,7 +63,7 @@ export const OPERATIONS = [
   op('movePostsInQueue', 'posts move-in-queue', 'POST', '/workspaces/{workspace_id}/posts/move-in-queue', { body: true, idempotent: true, confirm: true }),
   op('getPost', 'posts show', 'GET', '/workspaces/{workspace_id}/posts/{post}'),
   op('patchPost', 'posts update', 'PATCH', '/workspaces/{workspace_id}/posts/{post}', { body: true, ifMatch: 'post' }),
-  op('deletePost', 'posts delete', 'DELETE', '/workspaces/{workspace_id}/posts/{post}', { ifMatch: 'post', idempotent: true }),
+  op('deletePost', 'posts delete', 'DELETE', '/workspaces/{workspace_id}/posts/{post}', { ifMatch: 'post', idempotent: true, confirm: true }),
   op('publishPosts', 'posts publish', 'POST', '/workspaces/{workspace_id}/posts/publish', { body: true, idempotent: true, confirm: true }),
   op('cancelPost', 'posts cancel', 'POST', '/workspaces/{workspace_id}/posts/{post}/cancel', { body: true, ifMatch: 'post', idempotent: true, confirm: true }),
   op('reschedulePost', 'posts reschedule', 'POST', '/workspaces/{workspace_id}/posts/{post}/reschedule', { body: true, ifMatch: 'post', idempotent: true, confirm: true }),

@@ -1868,3 +1868,101 @@ test('assets download writes a signed response without overwriting files', async
   })
   assert.equal((await readFile(outputPath)).toString(), 'asset bytes')
 })
+
+test('posts list renders body text even when it is carried under payload', async () => {
+  const stdout = output()
+  await withApiKey(async () => {
+    const exitCode = await run(
+      ['posts', 'list', '--workspace', 'ws_1'],
+      { stdin: process.stdin, stdout: stdout.stream, stderr: output().stream },
+      {
+        fetchImpl: async () =>
+          new Response(
+            JSON.stringify({
+              data: [
+                {
+                  id: 'send_1',
+                  state: 'draft',
+                  payload: { channel: 'x', body: ['Launch copy'] },
+                },
+              ],
+              has_more: false,
+              next_cursor: null,
+            }),
+            { headers: { 'content-type': 'application/json' } }
+          ),
+      }
+    )
+    assert.equal(exitCode, 0)
+  })
+  const printed = stdout.read()
+  assert.match(printed, /send_1\tx\tdraft\tLaunch copy/)
+})
+
+test('posts delete refuses locally without --yes and makes no request', async () => {
+  let called = false
+  const stderr = output()
+  await withApiKey(async () => {
+    const exitCode = await run(
+      ['posts', 'delete', 'send_1', '--workspace', 'ws_1'],
+      { stdin: process.stdin, stdout: output().stream, stderr: stderr.stream },
+      {
+        fetchImpl: async () => {
+          called = true
+          throw new Error('no HTTP request should be made without --yes')
+        },
+      }
+    )
+    assert.equal(exitCode, 10)
+  })
+  assert.equal(called, false)
+  assert.match(stderr.read(), /rerun with --yes/)
+})
+
+test('posts delete help declares the confirmation gate like its destructive siblings', async () => {
+  const stdout = output()
+  const exitCode = await run(['posts', 'delete', '--help'], {
+    stdin: process.stdin,
+    stdout: stdout.stream,
+    stderr: output().stream,
+  })
+  assert.equal(exitCode, 0)
+  assert.match(
+    stdout.read(),
+    /Side effects: Requires --yes\. This can publish, disconnect, or delete data\./
+  )
+})
+
+test('an unknown flag with a value is rejected instead of silently ignored', async () => {
+  let called = false
+  const stderr = output()
+  await withApiKey(async () => {
+    const exitCode = await run(
+      ['posts', 'list', '--made-up-flag', 'somevalue'],
+      { stdin: process.stdin, stdout: output().stream, stderr: stderr.stream },
+      {
+        fetchImpl: async () => {
+          called = true
+          throw new Error('unknown flags must not reach the API')
+        },
+      }
+    )
+    assert.equal(exitCode, 2)
+  })
+  assert.equal(called, false)
+  assert.match(stderr.read(), /Unknown flag --made-up-flag/)
+})
+
+test('an unknown flag without a value exits 2 through the handler, not a raw crash', async () => {
+  const stderr = output()
+  const exitCode = await withApiKey(() =>
+    run(['posts', 'list', '--made-up-flag'], {
+      stdin: process.stdin,
+      stdout: output().stream,
+      stderr: stderr.stream,
+    })
+  )
+  assert.equal(exitCode, 2)
+  assert.match(stderr.read(), /Unknown flag --made-up-flag/)
+  assert.doesNotMatch(stderr.read(), /at \w+.*\(/)
+})
