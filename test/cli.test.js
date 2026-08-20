@@ -368,6 +368,16 @@ test('workspace creation requires confirmation before a prorated charge', async 
     JSON.stringify({ name: 'Product Marketing', time_zone: 'Europe/Berlin' })
   )
   let seen
+  const preview = {
+    object: 'workspace_creation_preview',
+    charge_required: true,
+    currency: 'eur',
+    amount_due: 425,
+    recurring_amount: 1990,
+    interval: 'month',
+    current_workspace_quantity: 1,
+    new_workspace_quantity: 2,
+  }
   await withApiKey(async () => {
     const rejected = await run(
       ['workspaces', 'create', '--file', requestPath],
@@ -377,8 +387,15 @@ test('workspace creation requires confirmation before a prorated charge', async 
         stderr: output().stream,
       },
       {
-        fetchImpl: async () => {
-          throw new Error('The API must not be called without --yes.')
+        fetchImpl: async (url) => {
+          assert.equal(
+            String(url),
+            'https://api.openpmm.com/v1/workspace-creation-preview'
+          )
+          return new Response(JSON.stringify(preview), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          })
         },
       }
     )
@@ -402,6 +419,11 @@ test('workspace creation requires confirmation before a prorated charge', async 
       },
       {
         fetchImpl: async (url, init) => {
+          if (String(url).endsWith('/workspace-creation-preview'))
+            return new Response(JSON.stringify(preview), {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+            })
           seen = {
             url: String(url),
             headers: init.headers,
@@ -422,6 +444,14 @@ test('workspace creation requires confirmation before a prorated charge', async 
     name: 'Product Marketing',
     time_zone: 'Europe/Berlin',
     confirmed: true,
+    billing_preview: {
+      currency: 'eur',
+      amount_due: 425,
+      recurring_amount: 1990,
+      interval: 'month',
+      current_workspace_quantity: 1,
+      new_workspace_quantity: 2,
+    },
   })
 })
 
