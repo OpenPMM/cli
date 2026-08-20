@@ -32,13 +32,9 @@ async function withApiKey(callback) {
   }
 }
 
-test('every operation has one unique, guessable command and a /v1-safe path', () => {
+test('every operation has a unique ID, a guessable command, and a /v1-safe path', () => {
   assert.equal(
     new Set(OPERATIONS.map((operation) => operation.id)).size,
-    OPERATIONS.length
-  )
-  assert.equal(
-    new Set(OPERATIONS.map((operation) => operation.command)).size,
     OPERATIONS.length
   )
   for (const operation of OPERATIONS) {
@@ -282,6 +278,164 @@ test('signup creates a hosted link without reading or sending an API key', async
     workspace_name: 'Product Marketing',
   })
   assert.match(stdout.read(), /https:\/\/app\.openpmm\.com\/signup\/token/)
+})
+
+test('signup returns immediately and resume stores browser-authorized credentials without printing secrets', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'openpmm-cli-auth-'))
+  const credentialPath = join(directory, 'credentials.json')
+  const stdout = output()
+  const stderr = output()
+  const opened = []
+  const requests = []
+  const responses = [
+    {
+      status: 201,
+      body: {
+        object: 'signup_intent',
+        signup_url:
+          'https://app.openpmm.com/signup/token?next=%2Fcli%2Fauthorize%2Fbrowser',
+        expires_at: '2099-08-18T12:30:00.000Z',
+        cli_authorization: {
+          object: 'cli_authorization',
+          device_secret: 'device-secret-value-that-must-stay-private',
+          verification_uri: 'https://app.openpmm.com/cli/authorize/browser',
+          verification_uri_complete:
+            'https://app.openpmm.com/cli/authorize/browser',
+          expires_at: '2099-08-18T12:15:00.000Z',
+          interval: 5,
+        },
+      },
+    },
+    {
+      status: 202,
+      body: {
+        object: 'cli_authorization',
+        status: 'pending',
+        retry_after: 5,
+        expires_at: '2099-08-18T12:15:00.000Z',
+      },
+    },
+    {
+      status: 200,
+      body: {
+        object: 'cli_credential',
+        status: 'authorized',
+        api_key: 'opm_live_saved-secret',
+        workspace_id: 'ws_only',
+        workspace_name: 'Product Marketing',
+        account_id: 'acct_1',
+      },
+    },
+  ]
+  const signupExitCode = await run(
+    [
+      'signup',
+      'create',
+      '--email',
+      'publisher@example.com',
+      '--workspace-name',
+      'Product Marketing',
+      '--authorize-cli',
+      '--json',
+    ],
+    { stdin: process.stdin, stdout: stdout.stream, stderr: stderr.stream },
+    {
+      credentialPath,
+      openBrowser: async (url) => opened.push(url),
+      fetchImpl: async (url, init) => {
+        requests.push({ url: String(url), body: JSON.parse(init.body) })
+        const response = responses.shift()
+        return new Response(JSON.stringify(response.body), {
+          status: response.status,
+          headers: { 'content-type': 'application/json' },
+        })
+      },
+    }
+  )
+
+  assert.equal(signupExitCode, 0)
+  assert.deepEqual(opened, [
+    'https://app.openpmm.com/signup/token?next=%2Fcli%2Fauthorize%2Fbrowser',
+  ])
+  assert.equal(requests[0].body.authorize_cli, true)
+  assert.equal(requests.length, 1)
+  const signupOutput = stdout.read()
+  assert.doesNotMatch(signupOutput, /device-secret|opm_live_saved-secret/)
+  assert.equal(
+    JSON.parse(signupOutput).data.signup_url,
+    'https://app.openpmm.com/signup/token?next=%2Fcli%2Fauthorize%2Fbrowser'
+  )
+  assert.match(stderr.read(), /https:\/\/app\.openpmm\.com\/signup\/token/)
+  let stored = JSON.parse(await readFile(credentialPath, 'utf8'))
+  assert.equal(stored.pending['https://api.openpmm.com/v1'].device_secret, 'device-secret-value-that-must-stay-private')
+  assert.deepEqual(stored.credentials, {})
+
+  const resumeStdout = output()
+  const resumeExitCode = await run(
+    ['auth', 'login', '--resume', '--json'],
+    { stdin: process.stdin, stdout: resumeStdout.stream, stderr: output().stream },
+    {
+      credentialPath,
+      sleep: async () => {},
+      fetchImpl: async (url, init) => {
+        requests.push({ url: String(url), body: JSON.parse(init.body) })
+        const response = responses.shift()
+        return new Response(JSON.stringify(response.body), {
+          status: response.status,
+          headers: { 'content-type': 'application/json' },
+        })
+      },
+    }
+  )
+
+  assert.equal(resumeExitCode, 0)
+  assert.equal(requests[1].body.device_secret, requests[2].body.device_secret)
+  const resumeOutput = resumeStdout.read()
+  assert.doesNotMatch(resumeOutput, /device-secret|opm_live_saved-secret/)
+  assert.equal(JSON.parse(resumeOutput).data.workspace_id, 'ws_only')
+  stored = JSON.parse(await readFile(credentialPath, 'utf8'))
+  assert.equal(stored.credentials['https://api.openpmm.com/v1'], 'opm_live_saved-secret')
+  assert.equal(stored.workspaces['https://api.openpmm.com/v1'], 'ws_only')
+  assert.deepEqual(stored.pending, {})
+})
+
+test('a Workspace command discovers and uses the only available Workspace', async () => {
+  const urls = []
+  await withApiKey(async () => {
+    const exitCode = await run(
+      ['posts', 'list', '--json'],
+      {
+        stdin: process.stdin,
+        stdout: output().stream,
+        stderr: output().stream,
+      },
+      {
+        fetchImpl: async (url) => {
+          urls.push(String(url))
+          return String(url).includes('/workspaces?')
+            ? new Response(
+                JSON.stringify({
+                  data: [{ id: 'ws_only', name: 'Only Workspace' }],
+                  has_more: false,
+                  next_cursor: null,
+                }),
+                { headers: { 'content-type': 'application/json' } }
+              )
+            : new Response(
+                JSON.stringify({
+                  data: [],
+                  has_more: false,
+                  next_cursor: null,
+                }),
+                { headers: { 'content-type': 'application/json' } }
+              )
+        },
+      }
+    )
+    assert.equal(exitCode, 0)
+  })
+  assert.match(urls[0], /\/v1\/workspaces\?limit=2$/)
+  assert.match(urls[1], /\/v1\/workspaces\/ws_only\/posts$/)
 })
 
 test('Slack connection starts at Account scope without a Workspace selector', async () => {

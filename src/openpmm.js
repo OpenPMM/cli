@@ -8,7 +8,7 @@ import {
   stat,
   writeFile,
 } from 'node:fs/promises'
-import { homedir } from 'node:os'
+import { homedir, hostname } from 'node:os'
 import { basename, dirname, extname, join } from 'node:path'
 import { stdin, stdout, stderr } from 'node:process'
 import { Crc64Nvme, crc64NvmeBase64 } from './crc64.js'
@@ -48,8 +48,10 @@ export async function run(
     }
 
     const special = parsed.words.slice(0, 2).join(' ')
-    if (special === 'auth login') return await authLogin(parsed, io)
-    if (special === 'auth logout') return await authLogout(parsed, io)
+    if (special === 'auth login')
+      return await authLogin(parsed, io, dependencies)
+    if (special === 'auth logout')
+      return await authLogout(parsed, io, dependencies)
     if (special === 'webhooks verify')
       return await verifyWebhookSignature(parsed, io)
 
@@ -102,7 +104,11 @@ export async function run(
     const anonymous = match?.operation.authentication === 'none'
     const apiKey = anonymous
       ? null
-      : process.env.OPENPMM_API_KEY ?? (await storedCredential(baseUrl))
+      : process.env.OPENPMM_API_KEY ??
+        (await storedCredential(
+          baseUrl,
+          dependencies.credentialPath ?? CREDENTIAL_PATH
+        ))
     const transport = new PublicApiTransport({
       apiKey,
       anonymous,
@@ -111,8 +117,18 @@ export async function run(
       stderr: io.stderr,
       userAgent: `@openpmm/cli/${VERSION} (${process.platform}; ${process.arch})`,
     })
-    const workspace =
-      parsed.flags.workspace ?? process.env.OPENPMM_WORKSPACE ?? undefined
+    const workspace = await resolveWorkspace(
+      transport,
+      parsed.flags.workspace ?? process.env.OPENPMM_WORKSPACE ?? undefined,
+      {
+        required:
+          Boolean(assetWorkflow) ||
+          Boolean(match.operation.path.includes('{workspace_id}')),
+        baseUrl,
+        useStoredWorkspace: !process.env.OPENPMM_API_KEY,
+        credentialPath: dependencies.credentialPath ?? CREDENTIAL_PATH,
+      }
+    )
     if (
       (assetWorkflow || match.operation.path.includes('{workspace_id}')) &&
       !workspace
@@ -197,6 +213,45 @@ export async function run(
       autoPage: !parsed.flags.after,
       maxItems: positiveIntegerFlag(parsed.flags.limit, 'limit'),
     })
+    if (
+      match.operation.id === 'createSignupIntent' &&
+      parsed.flags['authorize-cli']
+    ) {
+      const authorization = result.data?.cli_authorization
+      if (!authorization?.device_secret)
+        throw new CliError(
+          'The signup response did not include a CLI authorization.',
+          { exitCode: 8 }
+        )
+      await beginBrowserAuthorization(
+        {
+          authorization,
+          browserUrl: result.data.signup_url,
+          baseUrl,
+        },
+        parsed,
+        io,
+        dependencies
+      )
+      renderSuccess(
+        {
+          data: {
+            object: 'signup_intent',
+            signup_url: result.data.signup_url,
+            expires_at: result.data.expires_at,
+            cli_authorization: safeAuthorizationMetadata(authorization),
+          },
+          meta: {
+            request_id: result.requestId,
+            idempotency_key: null,
+            operation_id: match.operation.id,
+          },
+        },
+        parsed.flags,
+        io
+      )
+      return 0
+    }
     const waited =
       parsed.flags.wait &&
       ['refreshPostAnalytics', 'refreshPostGroupAnalytics'].includes(
@@ -260,6 +315,10 @@ function parseArguments(argv) {
         'with-token',
         'no-color',
         'wait',
+        'authorize-cli',
+        'no-open',
+        'no-wait',
+        'resume',
       ].includes(name)
     ) {
       flags[name] = inline === undefined ? true : inline !== 'false'
@@ -371,6 +430,13 @@ async function requestBody(operation, parsed, io) {
     body = {
       email: requiredFlag(flags, 'email'),
       workspace_name: requiredFlag(flags, 'workspace-name'),
+      ...(flags['authorize-cli']
+        ? {
+            authorize_cli: true,
+            device_name: flags['device-name'] ?? hostname(),
+            cli_version: VERSION,
+          }
+        : {}),
     }
   }
 
@@ -812,38 +878,270 @@ async function readJsonInput(path, input) {
   }
 }
 
-async function authLogin(parsed, io) {
-  if (!parsed.flags['with-token'])
-    throw new CliError(
-      'Use `openpmm auth login --with-token` and pipe the API key through stdin.',
-      { exitCode: 2 }
-    )
-  const token = (await readStream(io.stdin)).trim()
-  if (!token)
-    throw new CliError('stdin did not contain an API key.', { exitCode: 2 })
+async function authLogin(parsed, io, dependencies = {}) {
   const baseUrl = normalizeApiBaseUrl(
     parsed.flags['api-base-url'] ??
       process.env.OPENPMM_API_BASE_URL ??
       DEFAULT_API_BASE_URL
   )
-  const store = await readCredentialStore()
-  store.credentials[baseUrl] = token
-  await writeCredentialStore(store)
-  write(io.stdout, `Saved an API key for ${baseUrl}.\n`)
+  const credentialPath = dependencies.credentialPath ?? CREDENTIAL_PATH
+  if (parsed.flags.resume && parsed.flags['no-wait'])
+    throw new CliError('Use --no-wait to start or --resume to finish, not both.', {
+      exitCode: 2,
+    })
+  if (parsed.flags['with-token']) {
+    const token = (await readStream(io.stdin)).trim()
+    if (!token)
+      throw new CliError('stdin did not contain an API key.', { exitCode: 2 })
+    const store = await readCredentialStore(credentialPath)
+    store.credentials[baseUrl] = token
+    delete store.pending[baseUrl]
+    await writeCredentialStore(store, credentialPath)
+    write(io.stdout, `Saved an API key for ${baseUrl}.\n`)
+    return 0
+  }
+  const store = await readCredentialStore(credentialPath)
+  let pending = store.pending[baseUrl]
+  if (
+    parsed.flags.resume &&
+    (!pending || Date.parse(pending.expires_at) <= Date.now())
+  )
+    throw new CliError(
+      'No pending CLI authorization is available. Run `openpmm auth login --no-wait` first.',
+      { code: 'cli_authorization_not_found', exitCode: 5 }
+    )
+  let started = false
+  if (!pending || Date.parse(pending.expires_at) <= Date.now()) {
+    const transport = new PublicApiTransport({
+      apiKey: null,
+      anonymous: true,
+      baseUrl,
+      fetchImpl: dependencies.fetchImpl,
+      stderr: io.stderr,
+      userAgent: `@openpmm/cli/${VERSION} (${process.platform}; ${process.arch})`,
+    })
+    const created = await transport.request({
+      method: 'POST',
+      path: '/cli-authorizations',
+      body: {
+        device_name: parsed.flags['device-name'] ?? hostname(),
+        cli_version: VERSION,
+      },
+    })
+    pending = {
+      ...created.data,
+      browser_url: created.data.verification_uri_complete,
+    }
+    started = true
+  }
+  if (started || !parsed.flags.resume)
+    await beginBrowserAuthorization(
+      { authorization: pending, browserUrl: pending.browser_url, baseUrl },
+      parsed,
+      io,
+      dependencies
+    )
+  if (parsed.flags['no-wait']) {
+    renderSuccess(
+      { data: safeAuthorizationMetadata(pending), meta: {} },
+      parsed.flags,
+      io
+    )
+    return 0
+  }
+  const authorized = await finishBrowserAuthorization(
+    { authorization: pending, browserUrl: pending.browser_url, baseUrl },
+    parsed,
+    io,
+    dependencies,
+    { announce: false }
+  )
+  if (parsed.flags.json)
+    write(
+      io.stdout,
+      `${JSON.stringify({
+        data: {
+          object: 'cli_login',
+          authorized: true,
+          workspace_id: authorized.workspace_id,
+          workspace_name: authorized.workspace_name,
+        },
+      })}\n`
+    )
+  else
+    write(
+      io.stdout,
+      `OpenPMM CLI is connected to ${authorized.workspace_name} (${authorized.workspace_id}).\n`
+    )
   return 0
 }
 
-async function authLogout(parsed, io) {
+async function authLogout(parsed, io, dependencies = {}) {
   const baseUrl = normalizeApiBaseUrl(
     parsed.flags['api-base-url'] ??
       process.env.OPENPMM_API_BASE_URL ??
       DEFAULT_API_BASE_URL
   )
-  const store = await readCredentialStore()
+  const credentialPath = dependencies.credentialPath ?? CREDENTIAL_PATH
+  const store = await readCredentialStore(credentialPath)
   delete store.credentials[baseUrl]
-  await writeCredentialStore(store)
+  delete store.workspaces[baseUrl]
+  delete store.pending[baseUrl]
+  await writeCredentialStore(store, credentialPath)
   write(io.stdout, `Removed the saved API key for ${baseUrl}.\n`)
   return 0
+}
+
+async function finishBrowserAuthorization(
+  { authorization, browserUrl, baseUrl },
+  parsed,
+  io,
+  dependencies,
+  { announce = true } = {}
+) {
+  const credentialPath = dependencies.credentialPath ?? CREDENTIAL_PATH
+  if (announce)
+    await beginBrowserAuthorization(
+      { authorization, browserUrl, baseUrl },
+      parsed,
+      io,
+      dependencies
+    )
+
+  const transport = new PublicApiTransport({
+    apiKey: null,
+    anonymous: true,
+    baseUrl,
+    fetchImpl: dependencies.fetchImpl,
+    stderr: io.stderr,
+    userAgent: `@openpmm/cli/${VERSION} (${process.platform}; ${process.arch})`,
+  })
+  const sleep = dependencies.sleep ?? defaultSleep
+  let retryAfter = Number(authorization.interval) || 5
+  while (Date.now() < Date.parse(authorization.expires_at)) {
+    await sleep(retryAfter * 1000)
+    const exchanged = await transport.request({
+      method: 'POST',
+      path: '/cli-authorizations/token',
+      body: { device_secret: authorization.device_secret },
+    })
+    if (exchanged.data?.status === 'pending') {
+      retryAfter = Number(exchanged.data.retry_after) || retryAfter
+      continue
+    }
+    if (exchanged.data?.status !== 'authorized' || !exchanged.data.api_key)
+      throw new CliError('The CLI authorization response was invalid.', {
+        exitCode: 8,
+      })
+    const latest = await readCredentialStore(credentialPath)
+    latest.credentials[baseUrl] = exchanged.data.api_key
+    latest.workspaces[baseUrl] = exchanged.data.workspace_id
+    delete latest.pending[baseUrl]
+    await writeCredentialStore(latest, credentialPath)
+    return exchanged.data
+  }
+  throw new CliError(
+    'CLI authorization expired. Run `openpmm auth login` to try again.',
+    { code: 'cli_authorization_not_found', exitCode: 5 }
+  )
+}
+
+async function beginBrowserAuthorization(
+  { authorization, browserUrl, baseUrl },
+  parsed,
+  io,
+  dependencies
+) {
+  const credentialPath = dependencies.credentialPath ?? CREDENTIAL_PATH
+  const store = await readCredentialStore(credentialPath)
+  store.pending[baseUrl] = {
+    ...authorization,
+    browser_url: browserUrl,
+  }
+  await writeCredentialStore(store, credentialPath)
+
+  write(io.stderr, `Open this link to authorize OpenPMM:\n${browserUrl}\n`)
+  if (!parsed.flags['no-open']) {
+    try {
+      await openBrowser(browserUrl, dependencies.openBrowser)
+    } catch {
+      write(io.stderr, 'The browser did not open automatically. Use the link above.\n')
+    }
+  }
+}
+
+function safeAuthorizationMetadata(authorization) {
+  return {
+    object: 'cli_authorization',
+    status: 'pending',
+    verification_uri: authorization.verification_uri,
+    verification_uri_complete:
+      authorization.verification_uri_complete ?? authorization.browser_url,
+    expires_at: authorization.expires_at,
+    interval: authorization.interval,
+  }
+}
+
+async function openBrowser(url, injected) {
+  if (injected) return await injected(url)
+  const { spawn } = await import('node:child_process')
+  const command =
+    process.platform === 'darwin'
+      ? ['open', [url]]
+      : process.platform === 'win32'
+        ? ['cmd', ['/c', 'start', '', url]]
+        : ['xdg-open', [url]]
+  const child = spawn(command[0], command[1], {
+    detached: true,
+    stdio: 'ignore',
+    windowsHide: true,
+  })
+  await new Promise((resolve, reject) => {
+    child.once('error', reject)
+    child.once('spawn', () => {
+      child.unref()
+      resolve()
+    })
+  })
+}
+
+async function resolveWorkspace(
+  transport,
+  explicitWorkspace,
+  { required, baseUrl, useStoredWorkspace, credentialPath }
+) {
+  if (!required || explicitWorkspace) return explicitWorkspace
+  if (useStoredWorkspace) {
+    const stored = (await readCredentialStore(credentialPath)).workspaces[baseUrl]
+    if (stored) return stored
+  }
+  const result = await transport.request({
+    method: 'GET',
+    path: '/workspaces',
+    query: { limit: 2 },
+  })
+  const workspaces = Array.isArray(result.data?.data) ? result.data.data : []
+  if (workspaces.length === 1) {
+    const workspaceId = workspaces[0]?.id
+    if (!workspaceId)
+      throw new CliError('The Workspace response did not include an ID.', {
+        exitCode: 8,
+      })
+    if (useStoredWorkspace) {
+      const store = await readCredentialStore(credentialPath)
+      store.workspaces[baseUrl] = workspaceId
+      await writeCredentialStore(store, credentialPath)
+    }
+    return workspaceId
+  }
+  if (workspaces.length === 0)
+    throw new CliError('No Workspace is available for this API key.', {
+      exitCode: 5,
+    })
+  throw new CliError(
+    'More than one Workspace is available. Pass --workspace <id> or set OPENPMM_WORKSPACE.',
+    { exitCode: 2 }
+  )
 }
 
 async function verifyWebhookSignature(parsed, io) {
@@ -924,35 +1222,44 @@ async function verifyWebhookSignature(parsed, io) {
   return 0
 }
 
-async function storedCredential(baseUrl) {
-  return (await readCredentialStore()).credentials[baseUrl] ?? null
+async function storedCredential(baseUrl, credentialPath = CREDENTIAL_PATH) {
+  return (await readCredentialStore(credentialPath)).credentials[baseUrl] ?? null
 }
 
-async function readCredentialStore() {
+async function readCredentialStore(credentialPath = CREDENTIAL_PATH) {
   try {
-    const metadata = await stat(CREDENTIAL_PATH)
+    const metadata = await stat(credentialPath)
     if (process.platform !== 'win32' && (metadata.mode & 0o077) !== 0)
       throw new CliError(
-        `Refusing to read ${CREDENTIAL_PATH} because it is accessible by other users. Run \`chmod 600 ${CREDENTIAL_PATH}\` or use OPENPMM_API_KEY.`,
+        `Refusing to read ${credentialPath} because it is accessible by other users. Run \`chmod 600 ${credentialPath}\` or use OPENPMM_API_KEY.`,
         { exitCode: 3 }
       )
-    const parsed = JSON.parse(await readFile(CREDENTIAL_PATH, 'utf8'))
-    return parsed?.version === 1 && parsed.credentials
-      ? parsed
-      : { version: 1, credentials: {} }
+    const parsed = JSON.parse(await readFile(credentialPath, 'utf8'))
+    return [1, 2].includes(parsed?.version) && parsed.credentials
+      ? {
+          version: 2,
+          credentials: parsed.credentials,
+          workspaces: parsed.workspaces ?? {},
+          pending: parsed.pending ?? {},
+        }
+      : emptyCredentialStore()
   } catch (error) {
     if (error instanceof CliError) throw error
-    return { version: 1, credentials: {} }
+    return emptyCredentialStore()
   }
 }
 
-async function writeCredentialStore(store) {
-  await mkdir(dirname(CREDENTIAL_PATH), { recursive: true, mode: 0o700 })
-  if (process.platform !== 'win32') await chmod(dirname(CREDENTIAL_PATH), 0o700)
-  const temporary = `${CREDENTIAL_PATH}.${process.pid}.tmp`
+function emptyCredentialStore() {
+  return { version: 2, credentials: {}, workspaces: {}, pending: {} }
+}
+
+async function writeCredentialStore(store, credentialPath = CREDENTIAL_PATH) {
+  await mkdir(dirname(credentialPath), { recursive: true, mode: 0o700 })
+  if (process.platform !== 'win32') await chmod(dirname(credentialPath), 0o700)
+  const temporary = `${credentialPath}.${process.pid}.tmp`
   await writeFile(temporary, `${JSON.stringify(store)}\n`, { mode: 0o600 })
   await chmod(temporary, 0o600)
-  await rename(temporary, CREDENTIAL_PATH)
+  await rename(temporary, credentialPath)
 }
 
 function renderSuccess(output, flags, io) {
@@ -1044,8 +1351,8 @@ function renderError(error, flags, io) {
 
 function helpFor(command) {
   if (!command)
-    return `OpenPMM CLI ${VERSION}\n\nUse every OpenPMM customer workflow through the public /v1 API.\n\nCommon path:\n  openpmm signup create --email you@example.com --workspace-name "Product Marketing"\n  export OPENPMM_API_KEY=opm_live_...\n  openpmm workspaces list --json\n  openpmm posts create --workspace ws_... --when draft --channel x --body "Draft copy"\n  openpmm posts list --workspace ws_... --view drafts --json\n  openpmm posts publish --workspace ws_... --post post_... --post-version 1 --destination dst_... --yes\n\nCommands:\n${[
-      ...OPERATIONS.map((operation) => operation.command),
+    return `OpenPMM CLI ${VERSION}\n\nUse every OpenPMM customer workflow through the public /v1 API.\n\nCommon path:\n  openpmm signup create --email you@example.com --workspace-name "Product Marketing" --authorize-cli\n  openpmm posts create --when draft --channel x --body "Draft copy"\n  openpmm posts list --view drafts --json\n  openpmm posts publish --post post_... --post-version 1 --destination dst_... --yes\n\nCommands:\n${[
+      ...new Set(OPERATIONS.map((operation) => operation.command)),
       'assets download',
       'assets upload',
       'webhooks verify',
@@ -1054,8 +1361,10 @@ function helpFor(command) {
       .map((value) => `  ${value}`)
       .join(
         '\n'
-      )}\n\nGlobal flags:\n  --workspace <id>       Workspace ID (or OPENPMM_WORKSPACE)\n  --api-base-url <url>   Public API origin (or OPENPMM_API_BASE_URL)\n  --file <path|->        Complete JSON request body\n  --json, -json          Stable JSON output\n  --jsonl                One list item per line\n  --limit <count>        Bound total list items\n  --page-size <count>    Control the public API page size\n  --quiet                IDs only\n  --yes                  Confirm publishing or destructive work\n  --help                  Show help\n  --version               Show version\n\nRun openpmm <command> --help for command details.\n`
+      )}\n\nGlobal flags:\n  --workspace <id>       Workspace ID. Omit when the key has one Workspace.\n  --api-base-url <url>   Public API origin (or OPENPMM_API_BASE_URL)\n  --file <path|->        Complete JSON request body\n  --json, -json          Stable JSON output\n  --jsonl                One list item per line\n  --limit <count>        Bound total list items\n  --page-size <count>    Control the public API page size\n  --quiet                IDs only\n  --yes                  Confirm publishing or destructive work\n  --help                  Show help\n  --version               Show version\n\nRun openpmm <command> --help for command details.\n`
   const convenienceHelp = {
+    'auth login':
+      'openpmm auth login [--no-open] [--no-wait | --resume]\n\nOpen a browser to sign in and authorize the CLI. Use --no-wait for safe agent-readable metadata, then --resume after browser approval. OpenPMM stores the resulting API key and selected Workspace in ~/.config/openpmm/credentials.json with user-only permissions. Use --with-token only to import an existing API key from stdin.\n',
     'assets upload':
       'openpmm assets upload <path> --workspace <id> [--kind card|reel|poster] [--content-type <type>]\n\nCreate an upload session, stream the file to storage, and complete it through public /v1 operations.\n',
     'assets download':
@@ -1097,7 +1406,7 @@ function helpFor(command) {
       : operation.id === 'submitFeedback'
         ? ' Use --message <text> or provide a JSON request body.'
       : operation.id === 'createSignupIntent'
-        ? ' Use --email and --workspace-name. This command does not require an API key. Open the returned signup_url to finish with Google or an email address and password.'
+        ? ' Use --email and --workspace-name. Add --authorize-cli for one browser signup and CLI authorization flow. This command does not require an API key. Finish with Google or an email address and password.'
       : operation.id === 'createDestinationConnectionSession'
         ? ' Bluesky requires --account <handle-or-did>. Mastodon requires --instance-origin <url>.'
       : operation.id === 'createBillingCheckoutSession'

@@ -52,7 +52,7 @@ export class PublicApiTransport {
   }) {
     if (!apiKey && !anonymous)
       throw new CliError(
-        'No API key is configured. Set OPENPMM_API_KEY or run `openpmm auth login --with-token`.',
+        'No API key is configured. Run `openpmm auth login` or set OPENPMM_API_KEY.',
         { exitCode: 3 }
       )
     this.apiKey = apiKey
