@@ -1541,7 +1541,7 @@ function helpFor(command) {
       : operation.id === 'createDestinationConnectionSession'
         ? ' Use --provider <provider>. Bluesky requires --account <handle-or-did>. Mastodon requires --instance-origin <url>.'
       : operation.id === 'createBillingCheckoutSession'
-        ? ' Use --interval month or --interval year. Signup starts the 14-day trial automatically. Open the returned URL to start paid service immediately and unlock X.'
+        ? ' Use --interval month or --interval year. Signup starts the 14-day trial automatically. OpenPMM applies the beta offer without a promotion code. Monthly costs $1.99 for the first 3 paid months, then $9.95. Annual costs $75.62 for the first year, then $99.50. Open the returned URL to start paid service immediately and unlock X.'
       : operation.id === 'convertBillingTrial'
         ? ' This command is only for legacy Stripe-hosted trials. New trials use billing subscribe.'
       : operation.id === 'previewWorkspaceCreation'
