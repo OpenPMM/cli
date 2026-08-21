@@ -1208,26 +1208,20 @@ test('human destination and Post lists show actionable state', async () => {
             JSON.stringify({
               data: [
                 {
-                  id: 'provider:threads',
-                  provider: 'threads',
-                  connection_state: 'disconnected',
-                  configured: true,
-                  connectable: true,
-                  publishable: false,
-                  guidance: 'Start a connection session.',
+                  id: 'dest_threads',
+                  channel: 'threads',
+                  status: 'ready',
+                  is_default: true,
+                  display_name: '@openpmm',
                 },
                 {
-                  id: 'provider:x',
-                  provider: 'x',
-                  connection_state: 'disconnected',
-                  configured: true,
-                  connectable: false,
-                  publishable: false,
-                  guidance: 'X is not available during the free trial.',
+                  id: 'dest_x',
+                  channel: 'x',
+                  status: 'reauthorization-required',
+                  is_default: false,
+                  display_name: '@openpmm',
                 },
               ],
-              has_more: false,
-              next_cursor: null,
             }),
             { headers: { 'content-type': 'application/json' } }
           ),
@@ -1264,9 +1258,9 @@ test('human destination and Post lists show actionable state', async () => {
   })
   assert.equal(
     destinations.read(),
-    'PROVIDER\tSTATE\tACCESS\tDETAIL\n' +
-      'threads\tdisconnected\tconnectable\tStart a connection session.\n' +
-      'x\tdisconnected\tunavailable\tX is not available during the free trial.\n'
+    'ID\tCHANNEL\tSTATUS\tDEFAULT\tNAME\n' +
+      'dest_threads\tthreads\tready\tyes\t@openpmm\n' +
+      'dest_x\tx\treauthorization-required\tno\t@openpmm\n'
   )
   assert.equal(
     posts.read(),

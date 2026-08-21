@@ -1396,17 +1396,11 @@ function jsonSuccessOutput(output) {
 }
 
 function renderDestinationList(values, stream) {
-  write(stream, 'PROVIDER\tSTATE\tACCESS\tDETAIL\n')
+  write(stream, 'ID\tCHANNEL\tSTATUS\tDEFAULT\tNAME\n')
   for (const value of values) {
-    const access = value.publishable
-      ? 'publishable'
-      : value.connectable
-        ? 'connectable'
-        : 'unavailable'
-    const detail = value.display_name ?? value.guidance ?? ''
     write(
       stream,
-      `${value.provider ?? value.channel ?? value.id}\t${value.connection_state ?? 'unknown'}\t${access}\t${detail}\n`
+      `${value.id}\t${value.channel ?? 'unknown'}\t${value.status ?? 'unknown'}\t${value.is_default ? 'yes' : 'no'}\t${value.display_name ?? ''}\n`
     )
   }
 }
@@ -1539,7 +1533,7 @@ function helpFor(command) {
       : operation.id === 'createSignupIntent'
         ? ' Use --email and --workspace-name. Add --authorize-cli for one browser signup and CLI authorization flow. This command does not require an API key. Finish with Google or an email address and password.'
       : operation.id === 'createDestinationConnectionSession'
-        ? ' Use --provider <provider>. Bluesky requires --account <handle-or-did>. Mastodon requires --instance-origin <url>.'
+        ? ' Use --provider bluesky|x|youtube|facebook|instagram|threads|mastodon|linkedin|tiktok. Bluesky requires --account <handle-or-did>. Mastodon requires --instance-origin <url>.'
       : operation.id === 'createBillingCheckoutSession'
         ? ' Use --interval month or --interval year. Signup starts the 14-day trial automatically. Open the returned URL to start paid service immediately and unlock X.'
       : operation.id === 'convertBillingTrial'
