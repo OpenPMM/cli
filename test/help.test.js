@@ -104,8 +104,12 @@ test('destination connection help explains provider-specific inputs', async () =
 
   assert.equal(exitCode, 0)
   assert.match(stdout.read(), /Bluesky requires --account <handle-or-did>/)
+  assert.match(
+    stdout.read(),
+    /bluesky\|x\|youtube\|facebook\|instagram\|threads\|mastodon\|linkedin\|tiktok/
+  )
   assert.match(stdout.read(), /Mastodon requires --instance-origin <url>/)
-  assert.match(stdout.read(), /Use --provider <provider>/)
+  assert.match(stdout.read(), /Use --provider bluesky\|x\|youtube/)
 })
 
 test('every API command help includes a usage line', async () => {
