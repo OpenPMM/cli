@@ -114,6 +114,144 @@ test('every operation has a unique ID, a guessable command, and a /v1-safe path'
   }
 })
 
+test('Writing Assistant settings show and update use the public API with optimistic concurrency', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'openpmm-cli-writing-'))
+  const requestPath = join(directory, 'settings.json')
+  const actions = Object.fromEntries(
+    [
+      'fix_grammar',
+      'improve_writing',
+      'make_punchier',
+      'condense',
+      'rephrase',
+      'expand',
+      'improve_structure',
+    ].map((key) => [
+      key,
+      {
+        title: key.replaceAll('_', ' '),
+        prompt: `Apply ${key}.`,
+        icon: 'sparkles',
+      },
+    ])
+  )
+  await writeFile(requestPath, `${JSON.stringify({ actions })}\n`)
+  const requests = []
+
+  await withApiKey(async () => {
+    assert.equal(
+      await run(
+        [
+          'writing-assistant',
+          'settings',
+          'show',
+          '--workspace',
+          'ws_1',
+          '--json',
+        ],
+        {
+          stdin: process.stdin,
+          stdout: output().stream,
+          stderr: output().stream,
+        },
+        {
+          fetchImpl: async (url, init) => {
+            requests.push({ url: String(url), init })
+            return new Response(
+              JSON.stringify({
+                object: 'writing_refinement_settings',
+                workspace_id: 'ws_1',
+                actions,
+                updated_at: null,
+              }),
+              {
+                headers: {
+                  'content-type': 'application/json',
+                  etag: '"writing-refinement-settings:ws_1:v0"',
+                },
+              }
+            )
+          },
+        }
+      ),
+      0
+    )
+
+    assert.equal(
+      await run(
+        [
+          'writing-assistant',
+          'settings',
+          'update',
+          '--workspace',
+          'ws_1',
+          '--file',
+          requestPath,
+          '--json',
+        ],
+        {
+          stdin: process.stdin,
+          stdout: output().stream,
+          stderr: output().stream,
+        },
+        {
+          fetchImpl: async (url, init) => {
+            requests.push({ url: String(url), init })
+            if (init.method === 'GET')
+              return new Response(
+                JSON.stringify({
+                  object: 'writing_refinement_settings',
+                  workspace_id: 'ws_1',
+                  actions,
+                  updated_at: null,
+                }),
+                {
+                  headers: {
+                    'content-type': 'application/json',
+                    etag: '"writing-refinement-settings:ws_1:v0"',
+                  },
+                }
+              )
+            return new Response(
+              JSON.stringify({
+                object: 'writing_refinement_settings',
+                workspace_id: 'ws_1',
+                actions,
+                updated_at: '2026-08-22T12:00:00.000Z',
+              }),
+              { headers: { 'content-type': 'application/json' } }
+            )
+          },
+        }
+      ),
+      0
+    )
+  })
+
+  assert.deepEqual(
+    requests.map((request) => [request.init.method, request.url]),
+    [
+      [
+        'GET',
+        'https://api.openpmm.com/v1/workspaces/ws_1/writing-refinement-settings',
+      ],
+      [
+        'GET',
+        'https://api.openpmm.com/v1/workspaces/ws_1/writing-refinement-settings',
+      ],
+      [
+        'PUT',
+        'https://api.openpmm.com/v1/workspaces/ws_1/writing-refinement-settings',
+      ],
+    ]
+  )
+  assert.equal(
+    requests[2].init.headers['If-Match'],
+    '"writing-refinement-settings:ws_1:v0"'
+  )
+  assert.deepEqual(JSON.parse(requests[2].init.body), { actions })
+})
+
 test('analytics selects post and group resources without private routes', async () => {
   const requests = []
   await withApiKey(async () => {
