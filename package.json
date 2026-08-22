@@ -19,11 +19,11 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/openpmm/cli.git"
+    "url": "git+https://github.com/OpenPMM/cli.git"
   },
   "homepage": "https://docs.openpmm.com/cli/overview",
   "bugs": {
-    "url": "https://github.com/openpmm/cli/issues"
+    "url": "https://github.com/OpenPMM/cli/issues"
   },
   "publishConfig": {
     "access": "public",
