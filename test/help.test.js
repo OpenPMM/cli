@@ -38,7 +38,7 @@ Workspace: required
 Side effects: Requires --yes. This can publish, disconnect, or delete data.
 Input: common flags or --file <request.json>; use --file - for stdin. Include every draft Post in the group. Use --at queue to use the next destination queue slot.
 Output: human by default; --json, -json, --jsonl (lists), or --quiet.
-Relevant exits: 0 success, 2 input, 3 auth, 4 scope, 5 not found, 6 conflict, 7 validation, 8 unavailable, 9 ambiguous, 10 confirmation.
+Relevant exits: 0 success, 1 error, 2 input, 3 auth, 4 scope, 5 not found, 6 conflict, 7 validation, 8 unavailable, 9 ambiguous, 10 confirmation.
 
 Example:
   openpmm posts publish  --workspace ws_01JABCDEF --file request.json --yes --json
