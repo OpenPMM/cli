@@ -210,6 +210,41 @@ test('feedback help exposes the public endpoint, scope, and message flag', async
   assert.match(stdout.read(), /Use --message <text>/)
 })
 
+test('Writing Assistant settings help exposes the full replacement contract', async () => {
+  const show = output()
+  const update = output()
+
+  assert.equal(
+    await run(['writing-assistant', 'settings', 'show', '--help'], {
+      stdin: process.stdin,
+      stdout: show.stream,
+      stderr: output().stream,
+    }),
+    0
+  )
+  assert.match(
+    show.read(),
+    /Calls GET \/workspaces\/\{workspace_id\}\/writing-refinement-settings\./
+  )
+  assert.match(show.read(), /Required scope: workspaces:read/)
+  assert.match(show.read(), /Workspace: required/)
+
+  assert.equal(
+    await run(['writing-assistant', 'settings', 'update', '--help'], {
+      stdin: process.stdin,
+      stdout: update.stream,
+      stderr: output().stream,
+    }),
+    0
+  )
+  assert.match(
+    update.read(),
+    /Provide a complete JSON request body with an actions object for all seven refinement options/
+  )
+  assert.match(update.read(), /Each action requires title, prompt, and icon/)
+  assert.match(update.read(), /Required scope: workspaces:write/)
+})
+
 test('signup help states the anonymous browser handoff', async () => {
   const stdout = output()
   const exitCode = await run(['signup', 'create', '--help'], {
