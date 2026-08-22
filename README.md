@@ -51,7 +51,8 @@ openpmm auth login --resume --json
 ```
 
 Saved credentials live in
-`~/.config/openpmm/credentials.json`. The CLI creates the directory with mode
+`~/.config/openpmm/credentials.json`, or under `$XDG_CONFIG_HOME/openpmm/` when
+that variable is set. The CLI creates the directory with mode
 `0700`, writes the file with mode `0600`, and refuses to read a file that is
 accessible by other users. `OPENPMM_API_KEY` and `auth login --with-token`
 remain available for CI and advanced use. Environment variables always take
@@ -89,7 +90,7 @@ or Threads. Media attaches to the opening post:
 
 ```bash
 openpmm posts create \
-  --destination dst_... \
+  --destination dest_... \
   --body 'Opening post' \
   --body 'First reply' \
   --body 'Second reply' \
@@ -106,7 +107,7 @@ Publishing is explicit and irreversible. Review the request, then add `--yes`:
 openpmm posts publish \
   --post send_... \
   --post-version 1 \
-  --destination dst_... \
+  --destination dest_... \
   --yes \
   --json
 ```

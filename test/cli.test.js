@@ -460,6 +460,12 @@ test('signup returns immediately and resume stores browser-authorized credential
   const resumeOutput = resumeStdout.read()
   assert.doesNotMatch(resumeOutput, /device-secret|opm_live_saved-secret/)
   assert.equal(JSON.parse(resumeOutput).data.workspace_id, 'ws_only')
+  // The resume result carries the same meta envelope as every other JSON
+  // command, so an agent can trace it by operation and request id.
+  assert.equal(
+    JSON.parse(resumeOutput).meta.operation_id,
+    'exchangeCliAuthorization'
+  )
   stored = JSON.parse(await readFile(credentialPath, 'utf8'))
   assert.equal(stored.credentials['https://api.openpmm.com/v1'], 'opm_live_saved-secret')
   assert.equal(stored.workspaces['https://api.openpmm.com/v1'], 'ws_only')
@@ -579,101 +585,6 @@ test('billing subscribe sends the interval, confirmation, and idempotency key', 
   assert.equal(seen.url, 'https://api.openpmm.com/v1/billing/checkout-sessions')
   assert.equal(seen.headers['Idempotency-Key'], 'billing_test_1')
   assert.deepEqual(seen.body, { interval: 'year', confirmed: true })
-})
-
-test('workspace creation requires confirmation before a prorated charge', async () => {
-  const directory = await mkdtemp(join(tmpdir(), 'openpmm-cli-'))
-  const requestPath = join(directory, 'workspace.json')
-  await writeFile(
-    requestPath,
-    JSON.stringify({ name: 'Product Marketing', time_zone: 'Europe/Berlin' })
-  )
-  let seen
-  const preview = {
-    object: 'workspace_creation_preview',
-    charge_required: true,
-    currency: 'eur',
-    amount_due: 425,
-    recurring_amount: 1990,
-    interval: 'month',
-    current_workspace_quantity: 1,
-    new_workspace_quantity: 2,
-  }
-  await withApiKey(async () => {
-    const rejected = await run(
-      ['workspaces', 'create', '--file', requestPath],
-      {
-        stdin: process.stdin,
-        stdout: output().stream,
-        stderr: output().stream,
-      },
-      {
-        fetchImpl: async (url) => {
-          assert.equal(
-            String(url),
-            'https://api.openpmm.com/v1/workspace-creation-preview'
-          )
-          return new Response(JSON.stringify(preview), {
-            status: 200,
-            headers: { 'content-type': 'application/json' },
-          })
-        },
-      }
-    )
-    assert.equal(rejected, 10)
-
-    const accepted = await run(
-      [
-        'workspaces',
-        'create',
-        '--file',
-        requestPath,
-        '--idempotency-key',
-        'workspace_test_1',
-        '--yes',
-        '--json',
-      ],
-      {
-        stdin: process.stdin,
-        stdout: output().stream,
-        stderr: output().stream,
-      },
-      {
-        fetchImpl: async (url, init) => {
-          if (String(url).endsWith('/workspace-creation-preview'))
-            return new Response(JSON.stringify(preview), {
-              status: 200,
-              headers: { 'content-type': 'application/json' },
-            })
-          seen = {
-            url: String(url),
-            headers: init.headers,
-            body: JSON.parse(init.body),
-          }
-          return new Response(
-            JSON.stringify({ id: 'ws_created', object: 'workspace' }),
-            { status: 201, headers: { 'content-type': 'application/json' } }
-          )
-        },
-      }
-    )
-    assert.equal(accepted, 0)
-  })
-  assert.equal(seen.url, 'https://api.openpmm.com/v1/workspaces')
-  assert.equal(seen.headers['Idempotency-Key'], 'workspace_test_1')
-  assert.deepEqual(seen.body, {
-    name: 'Product Marketing',
-    time_zone: 'Europe/Berlin',
-    confirmed: true,
-    billing_preview: {
-      currency: 'eur',
-      amount_due: 425,
-      recurring_amount: 1990,
-      interval: 'month',
-      current_workspace_quantity: 1,
-      new_workspace_quantity: 2,
-    },
-  })
 })
 
 test('media validation sends destination IDs through the public API', async () => {
@@ -1305,6 +1216,170 @@ test('posts create composes the public draft operation', async () => {
   assert.equal(request.body.when, 'draft')
   assert.equal(request.body.group, 'launch')
   assert.equal(request.body.posts[0].channel, 'x')
+})
+
+test('posts create rejects --destination on a draft before any request', async () => {
+  let called = false
+  const err = output()
+  await withApiKey(async () => {
+    const exitCode = await run(
+      [
+        'posts',
+        'create',
+        '--workspace',
+        'ws_1',
+        '--channel',
+        'x',
+        '--when',
+        'draft',
+        '--destination',
+        'dest_1',
+        '--body',
+        'Draft copy',
+      ],
+      { stdin: process.stdin, stdout: output().stream, stderr: err.stream },
+      {
+        fetchImpl: async () => {
+          called = true
+          return new Response('{}', { status: 200 })
+        },
+      }
+    )
+    assert.equal(exitCode, 2)
+  })
+  assert.equal(called, false)
+  assert.match(err.read(), /A draft has no destination/)
+})
+
+test('posts create rejects a repeated --channel and names the values', async () => {
+  const err = output()
+  await withApiKey(async () => {
+    const exitCode = await run(
+      [
+        'posts',
+        'create',
+        '--workspace',
+        'ws_1',
+        '--channel',
+        'mastodon',
+        '--channel',
+        'threads',
+        '--when',
+        'draft',
+        '--body',
+        'One draft, two channels',
+      ],
+      { stdin: process.stdin, stdout: output().stream, stderr: err.stream },
+      {
+        fetchImpl: async () => {
+          throw new Error('no request should be made')
+        },
+      }
+    )
+    assert.equal(exitCode, 2)
+  })
+  assert.match(err.read(), /received: mastodon, threads/)
+})
+
+test('posts update rejects --destination instead of sending an unknown key', async () => {
+  let called = false
+  const err = output()
+  await withApiKey(async () => {
+    const exitCode = await run(
+      [
+        'posts',
+        'update',
+        'send_1',
+        '--workspace',
+        'ws_1',
+        '--destination',
+        'dest_1',
+        '--etag',
+        '"post:send_1:1"',
+      ],
+      { stdin: process.stdin, stdout: output().stream, stderr: err.stream },
+      {
+        fetchImpl: async () => {
+          called = true
+          return new Response('{}', { status: 200 })
+        },
+      }
+    )
+    assert.equal(exitCode, 2)
+  })
+  assert.equal(called, false)
+  assert.match(err.read(), /A post keeps no destination to update/)
+})
+
+test('assets list renders a human table, not bare IDs', async () => {
+  const out = output()
+  await withApiKey(async () => {
+    const exitCode = await run(
+      ['assets', 'list', '--workspace', 'ws_1'],
+      { stdin: process.stdin, stdout: out.stream, stderr: output().stream },
+      {
+        fetchImpl: async () =>
+          new Response(
+            JSON.stringify({
+              data: [
+                {
+                  id: 'asset_1',
+                  type: 'card',
+                  label: 'Launch artwork',
+                  dimensions: '1200x675',
+                },
+                {
+                  id: 'media_reel_1',
+                  type: 'reel',
+                  label: 'Launch reel',
+                  dimensions: '1080x1920',
+                },
+              ],
+              has_more: false,
+              next_cursor: null,
+            }),
+            { headers: { 'content-type': 'application/json' } }
+          ),
+      }
+    )
+    assert.equal(exitCode, 0)
+  })
+  assert.equal(
+    out.read(),
+    'ID\tKIND\tDIMENSIONS\tLABEL\n' +
+      'asset_1\tcard\t1200x675\tLaunch artwork\n' +
+      'media_reel_1\treel\t1080x1920\tLaunch reel\n'
+  )
+})
+
+test('posts show renders human detail, not raw JSON', async () => {
+  const out = output()
+  await withApiKey(async () => {
+    const exitCode = await run(
+      ['posts', 'show', 'send_1', '--workspace', 'ws_1'],
+      { stdin: process.stdin, stdout: out.stream, stderr: output().stream },
+      {
+        fetchImpl: async () =>
+          new Response(
+            JSON.stringify({
+              id: 'send_1',
+              object: 'post',
+              channel: 'mastodon',
+              state: 'draft',
+              body: ['Opening post', 'First reply'],
+            }),
+            { headers: { 'content-type': 'application/json' } }
+          ),
+      }
+    )
+    assert.equal(exitCode, 0)
+  })
+  const rendered = out.read()
+  assert.match(rendered, /^ID: send_1\n/)
+  assert.match(rendered, /Channel: mastodon/)
+  assert.match(rendered, /State: draft/)
+  assert.match(rendered, /Opening post/)
+  assert.doesNotMatch(rendered, /^\{/)
 })
 
 test('resource show commands accept the same --post selector as publish', async () => {

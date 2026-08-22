@@ -22,12 +22,11 @@ import {
 export const VERSION = '0.2.0'
 const DEFAULT_API_BASE_URL = 'https://api.openpmm.com/v1'
 const ASSET_UPLOAD_PART_SIZE = 8 * 1024 * 1024
-const CREDENTIAL_PATH = join(
-  homedir(),
-  '.config',
-  'openpmm',
-  'credentials.json'
-)
+const CONFIG_HOME =
+  process.env.XDG_CONFIG_HOME && process.env.XDG_CONFIG_HOME.trim()
+    ? process.env.XDG_CONFIG_HOME
+    : join(homedir(), '.config')
+const CREDENTIAL_PATH = join(CONFIG_HOME, 'openpmm', 'credentials.json')
 
 export async function run(
   argv = process.argv.slice(2),
@@ -78,11 +77,7 @@ export async function run(
       )
     if (parsed.flags.help)
       return write(io.stdout, helpFor(assetWorkflow ?? match.operation.command))
-    if (
-      match?.operation.confirm &&
-      match.operation.id !== 'createWorkspace' &&
-      !parsed.flags.yes
-    )
+    if (match?.operation.confirm && !parsed.flags.yes)
       throw new CliError(
         `This command can publish, disconnect, or delete data. Review it, then rerun with --yes.`,
         { code: 'confirmation_required', exitCode: 10 }
@@ -156,33 +151,6 @@ export async function run(
     )
     let body = await requestBody(match.operation, parsed, io)
     let etag = parsed.flags.etag
-
-    if (match.operation.id === 'createWorkspace') {
-      const previewResult = await transport.request({
-        method: 'GET',
-        path: '/workspace-creation-preview',
-      })
-      const preview = previewResult.data
-      renderWorkspaceChargePreview(preview, parsed.flags, io)
-      if (!parsed.flags.yes)
-        throw new CliError(
-          'Review the Workspace charge, then rerun with --yes.',
-          {
-            code: 'confirmation_required',
-            exitCode: 10,
-            details: preview,
-          }
-        )
-      if (preview.charge_required)
-        body.billing_preview = {
-          currency: preview.currency,
-          amount_due: preview.amount_due,
-          recurring_amount: preview.recurring_amount,
-          interval: preview.interval,
-          current_workspace_quantity: preview.current_workspace_quantity,
-          new_workspace_quantity: preview.new_workspace_quantity,
-        }
-    }
 
     if (match.operation.id === 'createPosts' && body?.when !== 'draft') {
       if (!parsed.flags.yes)
@@ -491,7 +459,15 @@ async function requestBody(operation, parsed, io) {
   if (operation.id === 'validateAsset') {
     set(body, 'destination_ids', csv(flags.destination))
     set(body, 'channels', csv(flags.channel))
-  } else set(body, 'destination_id', flags.destination)
+  }
+  // A post's destination is chosen when it is published, so `posts update` has
+  // no destination field — sending one is rejected by the API. Reject it here
+  // with a clear message rather than forwarding an unrecognized key.
+  if (operation.id === 'patchPost' && flags.destination !== undefined)
+    throw new CliError(
+      'A post keeps no destination to update; it is chosen when the post is published. Drop --destination.',
+      { exitCode: 2 }
+    )
   set(body, 'provider', flags.provider)
   set(body, 'instance_origin', flags['instance-origin'])
   set(body, 'account_identifier', flags.account)
@@ -522,6 +498,20 @@ async function requestBody(operation, parsed, io) {
   if (operation.id === 'createPosts') {
     if (!flags.file) {
       const publish = flags.when !== 'draft'
+      // A draft has no destination; it is chosen when the draft is published.
+      // Reject a stray --destination instead of silently discarding it.
+      if (!publish && flags.destination !== undefined)
+        throw new CliError(
+          'A draft has no destination; it is chosen when the draft is published. Drop --destination, or set --when to a publish mode.',
+          { exitCode: 2 }
+        )
+      // A draft targets one channel. Repeating --channel collects an array the
+      // API cannot read, so reject it and name what was passed.
+      if (!publish && Array.isArray(flags.channel))
+        throw new CliError(
+          `--channel accepts one channel per draft; received: ${flags.channel.join(', ')}. Create one draft per channel.`,
+          { exitCode: 2 }
+        )
       const when = flags.when ?? 'now'
       body = {
         when,
@@ -1010,6 +1000,7 @@ async function authLogin(parsed, io, dependencies = {}) {
     pending = {
       ...created.data,
       browser_url: created.data.verification_uri_complete,
+      requestId: created.requestId,
     }
     started = true
   }
@@ -1022,7 +1013,14 @@ async function authLogin(parsed, io, dependencies = {}) {
     )
   if (parsed.flags['no-wait']) {
     renderSuccess(
-      { data: safeAuthorizationMetadata(pending), meta: {} },
+      {
+        data: safeAuthorizationMetadata(pending),
+        meta: {
+          request_id: pending.requestId ?? null,
+          idempotency_key: null,
+          operation_id: 'createCliAuthorization',
+        },
+      },
       parsed.flags,
       io
     )
@@ -1036,16 +1034,22 @@ async function authLogin(parsed, io, dependencies = {}) {
     { announce: false }
   )
   if (parsed.flags.json)
-    write(
-      io.stdout,
-      `${JSON.stringify({
+    renderSuccess(
+      {
         data: {
           object: 'cli_login',
           authorized: true,
           workspace_id: authorized.workspace_id,
           workspace_name: authorized.workspace_name,
         },
-      })}\n`
+        meta: {
+          request_id: authorized.requestId ?? null,
+          idempotency_key: null,
+          operation_id: 'exchangeCliAuthorization',
+        },
+      },
+      parsed.flags,
+      io
     )
   else
     write(
@@ -1125,7 +1129,7 @@ async function finishBrowserAuthorization(
     latest.workspaces[baseUrl] = exchanged.data.workspace_id
     delete latest.pending[baseUrl]
     await writeCredentialStore(latest, credentialPath)
-    return exchanged.data
+    return { ...exchanged.data, requestId: exchanged.requestId }
   }
   throw new CliError(
     'CLI authorization expired. Run `openpmm auth login` to try again.',
@@ -1380,6 +1384,8 @@ function renderSuccess(output, flags, io) {
       return renderDestinationList(output.data.data, io.stdout)
     if (output.meta?.operation_id === 'listPosts')
       return renderPostList(output.data.data, io.stdout)
+    if (output.meta?.operation_id === 'listAssets')
+      return renderAssetList(output.data.data, io.stdout)
     for (const value of output.data.data)
       write(
         io.stdout,
@@ -1387,6 +1393,8 @@ function renderSuccess(output, flags, io) {
       )
     return
   }
+  if (output.meta?.operation_id === 'getPost')
+    return renderPostDetail(output.data, io.stdout)
   write(io.stdout, `${JSON.stringify(output.data, null, 2)}\n`)
 }
 
@@ -1420,29 +1428,32 @@ function renderPostList(values, stream) {
   }
 }
 
-function renderWorkspaceChargePreview(preview, flags, io) {
-  if (flags.quiet || flags.json || flags.jsonl) return
-  if (!preview.charge_required) {
-    write(io.stdout, 'No subscription charge is required for this Account.\n')
-    return
+function renderAssetList(values, stream) {
+  write(stream, 'ID\tKIND\tDIMENSIONS\tLABEL\n')
+  for (const value of values) {
+    write(
+      stream,
+      `${value.id ?? 'unknown'}\t${value.type ?? value.kind ?? 'unknown'}\t${value.dimensions ?? '-'}\t${value.label ?? ''}\n`
+    )
   }
-  const due = formatCurrencyAmount(preview.amount_due, preview.currency)
-  const recurring = formatCurrencyAmount(
-    preview.recurring_amount,
-    preview.currency
-  )
-  const period = preview.interval === 'year' ? 'year' : 'month'
-  write(
-    io.stdout,
-    `Workspace charge preview:\n  Due now: ${due}\n  New ${period === 'year' ? 'annual' : 'monthly'} total: ${recurring}/${period}\n  Workspace quantity: ${preview.current_workspace_quantity} → ${preview.new_workspace_quantity}\n`
-  )
 }
 
-function formatCurrencyAmount(amount, currency) {
-  return new Intl.NumberFormat(undefined, {
-    style: 'currency',
-    currency: String(currency).toUpperCase(),
-  }).format(Number(amount) / 100)
+function renderPostDetail(post, stream) {
+  const body = asArray(post.body ?? post.payload?.body ?? '')
+    .filter(Boolean)
+    .join('\n  ')
+  const lines = [
+    `ID: ${post.id ?? 'unknown'}`,
+    `Channel: ${post.channel ?? post.payload?.channel ?? 'unknown'}`,
+    `State: ${post.state ?? 'unknown'}`,
+  ]
+  if (post.headline) lines.push(`Headline: ${post.headline}`)
+  if (post.group) lines.push(`Group: ${post.group}`)
+  if (post.destination_id) lines.push(`Destination: ${post.destination_id}`)
+  if (post.scheduled_at) lines.push(`Scheduled: ${post.scheduled_at}`)
+  if (post.published_at) lines.push(`Published: ${post.published_at}`)
+  if (body) lines.push(`Body:\n  ${body}`)
+  write(stream, `${lines.join('\n')}\n`)
 }
 
 function renderError(error, flags, io) {
@@ -1473,7 +1484,7 @@ function renderError(error, flags, io) {
 
 function helpFor(command) {
   if (!command)
-    return `OpenPMM CLI ${VERSION}\n\nUse every OpenPMM customer workflow through the public /v1 API.\n\nCommon path:\n  openpmm signup create --email you@example.com --workspace-name "Product Marketing" --authorize-cli\n  openpmm posts create --when draft --channel x --body "Draft copy"\n  openpmm posts list --view drafts --json\n  openpmm posts publish --post send_... --post-version 1 --destination dst_... --yes\n\nCommands:\n${[
+    return `OpenPMM CLI ${VERSION}\n\nUse every OpenPMM customer workflow through the public /v1 API.\n\nCommon path:\n  openpmm signup create --email you@example.com --workspace-name "Product Marketing" --authorize-cli\n  openpmm posts create --when draft --channel x --body "Draft copy"\n  openpmm posts list --view drafts --json\n  openpmm posts publish --post send_... --post-version 1 --destination dest_... --yes\n\nCommands:\n${[
       ...new Set(OPERATIONS.map((operation) => operation.command)),
       'auth logout',
       'assets download',
@@ -1484,10 +1495,10 @@ function helpFor(command) {
       .map((value) => `  ${value}`)
       .join(
         '\n'
-      )}\n\nGlobal flags:\n  --workspace <id>       Workspace ID. Omit when the key has one Workspace.\n  --api-base-url <url>   Public API origin (or OPENPMM_API_BASE_URL)\n  --file <path|->        Complete JSON request body\n  --json, -json          Stable JSON output\n  --jsonl                One list item per line\n  --limit <count>        Bound total list items\n  --page-size <count>    Control the public API page size\n  --etag <value>         If-Match value for an update; read automatically when omitted\n  --quiet                IDs only\n  --yes                  Confirm publishing or destructive work\n  --help                  Show help\n  --version               Show version\n\nRun openpmm <command> --help for command details.\n`
+      )}\n\nGlobal flags:\n  --workspace <id>       Workspace ID. Omit when the key has one Workspace.\n  --api-base-url <url>   Public API origin (or OPENPMM_API_BASE_URL)\n  --file <path|->        Complete JSON request body\n  --json, -json          Stable JSON output\n  --jsonl                One list item per line\n  --limit <count>        Bound total list items\n  --page-size <count>    Control the public API page size\n  --etag <value>         If-Match value for an update; read automatically when omitted\n  --idempotency-key <k>  Safe-retry key for a create/publish; generated when omitted\n  --quiet                IDs only\n  --yes                  Confirm publishing or destructive work\n  --help                  Show help\n  --version               Show version\n\nRun openpmm <command> --help for command details.\n`
   const convenienceHelp = {
     'auth login':
-      'openpmm auth login [--no-open] [--no-wait | --resume]\n\nOpen a browser to sign in and authorize the CLI. Use --no-wait for safe agent-readable metadata, then --resume after browser approval. OpenPMM stores the resulting API key and selected Workspace in ~/.config/openpmm/credentials.json with user-only permissions. Use --with-token only to import an existing API key from stdin.\n',
+      'openpmm auth login [--no-open] [--no-wait | --resume]\n\nOpen a browser to sign in and authorize the CLI. Use --no-wait for safe agent-readable metadata, then --resume after browser approval. OpenPMM stores the resulting API key and selected Workspace in ~/.config/openpmm/credentials.json (or $XDG_CONFIG_HOME/openpmm) with user-only permissions. Use --with-token only to import an existing API key from stdin.\n',
     'auth logout':
       'openpmm auth logout [--api-base-url <url>]\n\nRemove the saved login for the selected API base URL. The command reports when no saved login exists.\n',
     'assets upload':
@@ -1507,13 +1518,11 @@ function helpFor(command) {
     .join(' ')
   const confirmation = requiresConfirmation(operation)
   const sideEffects = operation.confirm
-    ? operation.id === 'createWorkspace'
-      ? 'Requires --yes. This can charge a prorated Workspace subscription amount immediately.'
-      : operation.id === 'cancelWorkspaceSubscription'
-        ? 'Requires --yes. This schedules Workspace subscription cancellation at the paid term end.'
-        : operation.path.startsWith('/billing')
-          ? 'Requires --yes. This can start or charge a subscription.'
-          : 'Requires --yes. This can publish, disconnect, or delete data.'
+    ? operation.id === 'cancelWorkspaceSubscription'
+      ? 'Requires --yes. This schedules Workspace subscription cancellation at the paid term end.'
+      : operation.path.startsWith('/billing')
+        ? 'Requires --yes. This can start or charge a subscription.'
+        : 'Requires --yes. This can publish, disconnect, or delete data.'
     : operation.id === 'createPosts'
       ? 'Requires --yes unless the request creates a draft.'
       : 'No extra confirmation.'
@@ -1528,6 +1537,10 @@ function helpFor(command) {
         ? ' Use --post, --expected-scheduled-at, and --local-date for one Post. Use --file for an atomic multi-Post move.'
       : operation.id === 'patchDestination'
         ? ' Use --queue-policy <json> or provide a complete JSON request body.'
+      : operation.id === 'listPosts'
+        ? ' Use --view all|drafts|scheduled|published|attention|failed to filter by state, --channel <channel> to filter by channel, and --group <group> to filter by post group.'
+      : operation.id === 'validateAsset'
+        ? ' Provide at least one target: --channel <channel> and/or --destination <id> (repeat either to check several).'
       : operation.id === 'submitFeedback'
         ? ' Use --message <text> or provide a JSON request body.'
       : operation.id === 'createSignupIntent'
@@ -1538,8 +1551,6 @@ function helpFor(command) {
         ? ' Use --interval month or --interval year. Signup starts the 14-day trial automatically. OpenPMM applies the beta offer without a promotion code. Monthly costs $1.99 for the first 3 paid months, then $9.95. Annual costs $75.62 for the first year, then $99.50. Open the returned URL to start paid service immediately and unlock X.'
       : operation.id === 'convertBillingTrial'
         ? ' This command is only for legacy Stripe-hosted trials. New trials use billing subscribe.'
-      : operation.id === 'previewWorkspaceCreation'
-        ? ' Use this before workspaces create to inspect the exact prorated charge and new recurring total.'
       : operation.id === 'getAnalyticsReport'
         ? ' Use --from <date>, --until <date>, and --bucket day|week. Use --channel to filter the report.'
       : ['getPostAnalytics', 'refreshPostAnalytics'].includes(operation.id)
@@ -1547,7 +1558,7 @@ function helpFor(command) {
       : ['getPostGroupAnalytics', 'refreshPostGroupAnalytics'].includes(operation.id)
         ? ' Use --group <group>. Refresh returns per-Post outcomes. Add --wait to poll for a bounded time.'
       : ''
-  return `${command}\n\nUsage:\n  openpmm ${command}${positional ? ` ${positional}` : ''} [flags]\n\n${operationTitle(operation)} through the public API.\nCalls ${operation.method} ${operation.path}.\nRequired scope: ${scopeFor(operation)}\nWorkspace: ${operation.path.includes('{workspace_id}') ? 'required' : 'not required'}\nSide effects: ${sideEffects}\nInput: common flags or --file <request.json>; use --file - for stdin.${inputNote}\nOutput: human by default; --json, -json, --jsonl (lists), or --quiet.\nRelevant exits: 0 success, 2 input, 3 auth, 4 scope, 5 not found, 6 conflict, 7 validation, 8 unavailable, 9 ambiguous, 10 confirmation.\n\nExample:\n  openpmm ${command} ${positional} ${operation.path.includes('{workspace_id}') ? '--workspace ws_01JABCDEF ' : ''}${operation.body ? '--file request.json ' : ''}${confirmation ? '--yes ' : ''}--json\n`
+  return `${command}\n\nUsage:\n  openpmm ${command}${positional ? ` ${positional}` : ''} [flags]\n\n${operationTitle(operation)} through the public API.\nCalls ${operation.method} ${operation.path}.\nRequired scope: ${scopeFor(operation)}\nWorkspace: ${operation.path.includes('{workspace_id}') ? 'required' : 'not required'}\nSide effects: ${sideEffects}\nInput: common flags or --file <request.json>; use --file - for stdin.${inputNote}\nOutput: human by default; --json, -json, --jsonl (lists), or --quiet.\nRelevant exits: 0 success, 1 error, 2 input, 3 auth, 4 scope, 5 not found, 6 conflict, 7 validation, 8 unavailable, 9 ambiguous, 10 confirmation.\n\nExample:\n  openpmm ${command} ${positional} ${operation.path.includes('{workspace_id}') ? '--workspace ws_01JABCDEF ' : ''}${operation.body ? '--file request.json ' : ''}${confirmation ? '--yes ' : ''}--json\n`
 }
 
 function requiresConfirmation(operation) {
@@ -1562,12 +1573,7 @@ function operationTitle(operation) {
 }
 
 function scopeFor(operation) {
-  if (
-    operation.id === 'createWorkspace' ||
-    operation.id === 'previewWorkspaceCreation' ||
-    operation.id === 'cancelWorkspaceSubscription'
-  )
-    return 'billing:write'
+  if (operation.id === 'cancelWorkspaceSubscription') return 'billing:write'
   if (operation.authentication === 'none') return 'none'
   if (operation.id === 'getAccount') return 'none'
   if (operation.path.startsWith('/billing'))
