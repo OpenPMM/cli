@@ -94,6 +94,30 @@ test('every documented exit class is stable', async () => {
   }
 })
 
+test('an unknown idempotency outcome uses the ambiguous exit class', async () => {
+  const { PublicApiTransport } = await import('../src/transport.js')
+  const transport = new PublicApiTransport({
+    apiKey: 'test-key',
+    baseUrl: 'https://example.test',
+    fetchImpl: async () =>
+      new Response(
+        JSON.stringify({
+          code: 'public_idempotency_outcome_unknown',
+          detail: 'Inspect the affected resource before you create new work.',
+        }),
+        {
+          status: 409,
+          headers: { 'content-type': 'application/problem+json' },
+        }
+      ),
+  })
+
+  await assert.rejects(
+    transport.request({ method: 'POST', path: '/workspaces/ws_1/posts' }),
+    (error) => error.exitCode === 9
+  )
+})
+
 test('a publishing safety response exits without waiting and keeps its fields', async () => {
   const { PublicApiTransport } = await import('../src/transport.js')
   let calls = 0

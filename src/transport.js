@@ -146,13 +146,17 @@ function problemError(payload, status, requestId) {
 }
 
 function exitCodeFor(status, code) {
+  if (
+    code === 'ambiguous_outcome' ||
+    code === 'public_idempotency_outcome_unknown'
+  )
+    return 9
   if (status === 401) return 3
   if (status === 403) return 4
   if (status === 404) return 5
   if ([409, 412, 428].includes(status)) return 6
   if (status === 400 || status === 422) return 7
   if (status === 429 || status >= 500) return 8
-  if (code === 'ambiguous_outcome') return 9
   return 1
 }
 
