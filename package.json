@@ -21,7 +21,7 @@
     "type": "git",
     "url": "git+https://github.com/OpenPMM/cli.git"
   },
-  "homepage": "https://docs.openpmm.com/cli/overview",
+  "homepage": "https://www.openpmm.com/docs/cli/overview",
   "bugs": {
     "url": "https://github.com/OpenPMM/cli/issues"
   },

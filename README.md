@@ -3,7 +3,7 @@
   <h1>OpenPMM CLI</h1>
   <p>The first-party, API-only command line client for OpenPMM.</p>
   <p>
-    <a href="https://docs.openpmm.com/cli/overview">Documentation</a>
+    <a href="https://www.openpmm.com/docs/cli/overview">Documentation</a>
     ·
     <a href="https://github.com/OpenPMM/cli/issues">Issues</a>
   </p>
@@ -157,28 +157,6 @@ openpmm feedback submit \
 OpenPMM includes the workspace and CLI environment in the feedback email. The
 account email for the API credential creator is the reply-to address.
 
-### Customize the Writing Assistant
-
-Read the seven effective refinement options, including each full prompt and
-selected icon:
-
-```bash
-openpmm writing-assistant settings show --json
-```
-
-To replace the settings, save the response's `actions` object in a request
-file and edit it. Keep all seven stable action keys. Every action requires a
-`title`, `prompt`, and one of the supported `icon` keys. Then run:
-
-```bash
-openpmm writing-assistant settings update \
-  --file writing-assistant-settings.json \
-  --json
-```
-
-The CLI reads the current ETag automatically before the update. You can pass a
-previously read ETag explicitly with `--etag` for controlled concurrent edits.
-
 ### Manage webhooks
 
 List and manage workspace webhook endpoints through the API:
@@ -211,7 +189,6 @@ listing, status, and tests remain Workspace-scoped.
 | Account and workspaces | `accounts show`, `workspaces list`, `workspaces create`, `workspaces cancel-subscription` |
 | Billing | `billing show`, `billing subscribe`, `billing portal`, `billing convert-trial` |
 | Team | `team members list`, `team invitations create` |
-| Writing Assistant | `writing-assistant settings show`, `writing-assistant settings update` |
 | Posts | `posts create`, `posts list`, `posts update`, `posts publish` |
 | Assets | `assets list`, `assets upload`, `assets validate`, `assets download` |
 | Destinations | `destinations list`, `destinations connect`, `destinations refresh`, `destinations disconnect` |
@@ -279,7 +256,7 @@ backward compatible.
 
 ## Documentation and support
 
-- [CLI documentation](https://docs.openpmm.com/cli/overview)
+- [CLI documentation](https://www.openpmm.com/docs/cli/overview)
 - `openpmm --help` and `openpmm <command> --help`
 - [Issue tracker](https://github.com/OpenPMM/cli/issues)
 - [Security policy](SECURITY.md)

@@ -114,144 +114,6 @@ test('every operation has a unique ID, a guessable command, and a /v1-safe path'
   }
 })
 
-test('Writing Assistant settings show and update use the public API with optimistic concurrency', async () => {
-  const directory = await mkdtemp(join(tmpdir(), 'openpmm-cli-writing-'))
-  const requestPath = join(directory, 'settings.json')
-  const actions = Object.fromEntries(
-    [
-      'fix_grammar',
-      'improve_writing',
-      'make_punchier',
-      'condense',
-      'rephrase',
-      'expand',
-      'improve_structure',
-    ].map((key) => [
-      key,
-      {
-        title: key.replaceAll('_', ' '),
-        prompt: `Apply ${key}.`,
-        icon: 'sparkles',
-      },
-    ])
-  )
-  await writeFile(requestPath, `${JSON.stringify({ actions })}\n`)
-  const requests = []
-
-  await withApiKey(async () => {
-    assert.equal(
-      await run(
-        [
-          'writing-assistant',
-          'settings',
-          'show',
-          '--workspace',
-          'ws_1',
-          '--json',
-        ],
-        {
-          stdin: process.stdin,
-          stdout: output().stream,
-          stderr: output().stream,
-        },
-        {
-          fetchImpl: async (url, init) => {
-            requests.push({ url: String(url), init })
-            return new Response(
-              JSON.stringify({
-                object: 'writing_refinement_settings',
-                workspace_id: 'ws_1',
-                actions,
-                updated_at: null,
-              }),
-              {
-                headers: {
-                  'content-type': 'application/json',
-                  etag: '"writing-refinement-settings:ws_1:v0"',
-                },
-              }
-            )
-          },
-        }
-      ),
-      0
-    )
-
-    assert.equal(
-      await run(
-        [
-          'writing-assistant',
-          'settings',
-          'update',
-          '--workspace',
-          'ws_1',
-          '--file',
-          requestPath,
-          '--json',
-        ],
-        {
-          stdin: process.stdin,
-          stdout: output().stream,
-          stderr: output().stream,
-        },
-        {
-          fetchImpl: async (url, init) => {
-            requests.push({ url: String(url), init })
-            if (init.method === 'GET')
-              return new Response(
-                JSON.stringify({
-                  object: 'writing_refinement_settings',
-                  workspace_id: 'ws_1',
-                  actions,
-                  updated_at: null,
-                }),
-                {
-                  headers: {
-                    'content-type': 'application/json',
-                    etag: '"writing-refinement-settings:ws_1:v0"',
-                  },
-                }
-              )
-            return new Response(
-              JSON.stringify({
-                object: 'writing_refinement_settings',
-                workspace_id: 'ws_1',
-                actions,
-                updated_at: '2026-08-22T12:00:00.000Z',
-              }),
-              { headers: { 'content-type': 'application/json' } }
-            )
-          },
-        }
-      ),
-      0
-    )
-  })
-
-  assert.deepEqual(
-    requests.map((request) => [request.init.method, request.url]),
-    [
-      [
-        'GET',
-        'https://api.openpmm.com/v1/workspaces/ws_1/writing-refinement-settings',
-      ],
-      [
-        'GET',
-        'https://api.openpmm.com/v1/workspaces/ws_1/writing-refinement-settings',
-      ],
-      [
-        'PUT',
-        'https://api.openpmm.com/v1/workspaces/ws_1/writing-refinement-settings',
-      ],
-    ]
-  )
-  assert.equal(
-    requests[2].init.headers['If-Match'],
-    '"writing-refinement-settings:ws_1:v0"'
-  )
-  assert.deepEqual(JSON.parse(requests[2].init.body), { actions })
-})
-
 test('analytics selects post and group resources without private routes', async () => {
   const requests = []
   await withApiKey(async () => {
@@ -1164,8 +1026,8 @@ test('updates draft or scheduled Post content without requiring --yes', async ()
         'ws_1',
         '--body',
         'Updated copy',
-        '--options',
-        '{"channel":"linkedin","visibility":"CONNECTIONS","allowResharing":false}',
+        '--destination-options',
+        '{"linkedin":{"visibility":"connections","allow_resharing":false}}',
         '--json',
       ],
       {
@@ -1198,11 +1060,63 @@ test('updates draft or scheduled Post content without requiring --yes', async ()
   assert.deepEqual(methods, ['GET', 'PATCH'])
   assert.deepEqual(patchedBody, {
     body: ['Updated copy'],
-    options: {
-      channel: 'linkedin',
-      visibility: 'CONNECTIONS',
-      allowResharing: false,
+    destination_options: {
+      linkedin: {
+        visibility: 'connections',
+        allow_resharing: false,
+      },
     },
+  })
+})
+
+test('requires an explicit CLI flag for a retry that can duplicate provider content', async () => {
+  const requests = []
+  await withApiKey(async () => {
+    const exitCode = await run(
+      [
+        'posts',
+        'retry',
+        'post_1',
+        '--workspace',
+        'ws_1',
+        '--yes',
+        '--acknowledge-duplicate-risk',
+        '--json',
+      ],
+      {
+        stdin: process.stdin,
+        stdout: output().stream,
+        stderr: output().stream,
+      },
+      {
+        fetchImpl: async (url, init) => {
+          requests.push({ url: String(url), init })
+          return init.method === 'GET'
+            ? new Response(
+                JSON.stringify({
+                  object: 'post',
+                  state: 'needs-attention',
+                  retry_safety: 'may_duplicate',
+                }),
+                {
+                  headers: {
+                    'content-type': 'application/json',
+                    etag: '"post:post_1:1"',
+                  },
+                }
+              )
+            : new Response(JSON.stringify({ object: 'post' }), {
+                headers: { 'content-type': 'application/json' },
+              })
+        },
+      }
+    )
+    assert.equal(exitCode, 0)
+  })
+
+  assert.deepEqual(JSON.parse(requests[1].init.body), {
+    confirmed: true,
+    acknowledge_duplicate_risk: true,
   })
 })
 
@@ -1692,8 +1606,8 @@ test('posts create forwards one Bluesky video and its publishing options', async
         'Video update',
         '--media-item',
         '0:ast_video',
-        '--options',
-        '{"channel":"bluesky","languages":["en"],"contentLabels":[],"altTextByAssetId":{}}',
+        '--destination-options',
+        '{"bluesky":{"languages":["en"],"content_labels":[],"alt_text_by_asset_id":{}}}',
         '--yes',
         '--json',
       ],
@@ -1723,11 +1637,12 @@ test('posts create forwards one Bluesky video and its publishing options', async
     headline: null,
     body: ['Video update'],
     media_items: [{ asset_id: 'ast_video', item_index: 0 }],
-    options: {
-      channel: 'bluesky',
-      languages: ['en'],
-      contentLabels: [],
-      altTextByAssetId: {},
+    destination_options: {
+      bluesky: {
+        languages: ['en'],
+        content_labels: [],
+        alt_text_by_asset_id: {},
+      },
     },
   })
 })
@@ -2104,6 +2019,57 @@ test('posts list renders body text even when it is carried under payload', async
   })
   const printed = stdout.read()
   assert.match(printed, /send_1\tx\tdraft\tLaunch copy/)
+})
+
+test('posts list forwards lifecycle and destination filters', async () => {
+  let requestedUrl
+  await withApiKey(async () => {
+    const exitCode = await run(
+      [
+        'posts',
+        'list',
+        '--workspace',
+        'ws_1',
+        '--state',
+        'needs-attention',
+        '--destination',
+        'dest_1',
+        '--created-after',
+        '2026-08-01T00:00:00Z',
+        '--scheduled-before',
+        '2026-09-01T00:00:00Z',
+        '--include',
+        'attempts',
+        '--json',
+      ],
+      {
+        stdin: process.stdin,
+        stdout: output().stream,
+        stderr: output().stream,
+      },
+      {
+        fetchImpl: async (url) => {
+          requestedUrl = new URL(String(url))
+          return new Response(
+            JSON.stringify({ data: [], has_more: false, next_cursor: null }),
+            { headers: { 'content-type': 'application/json' } }
+          )
+        },
+      }
+    )
+    assert.equal(exitCode, 0)
+  })
+  assert.equal(requestedUrl.searchParams.get('state'), 'needs-attention')
+  assert.equal(requestedUrl.searchParams.get('destination_id'), 'dest_1')
+  assert.equal(
+    requestedUrl.searchParams.get('created_after'),
+    '2026-08-01T00:00:00Z'
+  )
+  assert.equal(
+    requestedUrl.searchParams.get('scheduled_before'),
+    '2026-09-01T00:00:00Z'
+  )
+  assert.equal(requestedUrl.searchParams.get('include'), 'attempts')
 })
 
 test('posts delete refuses locally without --yes and makes no request', async () => {

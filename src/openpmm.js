@@ -279,6 +279,7 @@ const BOOLEAN_FLAGS = new Set([
   'no-open',
   'no-wait',
   'resume',
+  'acknowledge-duplicate-risk',
 ])
 
 // Flags that carry a value. Keep in sync with every flag the CLI reads in
@@ -322,7 +323,10 @@ const VALUE_FLAGS = new Set([
   'media-item',
   'message',
   'name',
-  'options',
+  'destination-options',
+  'created-after',
+  'scheduled-before',
+  'state',
   'output',
   'page-size',
   'post',
@@ -443,6 +447,11 @@ async function requestBody(operation, parsed, io) {
   if (body === undefined) return undefined
 
   if (operation.confirm) body.confirmed = true
+  if (
+    operation.id === 'retryPost' &&
+    flags['acknowledge-duplicate-risk']
+  )
+    body.acknowledge_duplicate_risk = true
   set(body, 'name', flags.name)
   set(body, 'time_zone', flags['time-zone'])
   set(body, 'confirmation', flags.confirmation)
@@ -474,7 +483,11 @@ async function requestBody(operation, parsed, io) {
   set(body, 'enabled', booleanValue(flags.enabled))
   set(body, 'is_default', booleanValue(flags.default))
   set(body, 'queue_policy', jsonValue(flags['queue-policy']))
-  set(body, 'options', jsonValue(flags.options))
+  set(
+    body,
+    'destination_options',
+    jsonValue(flags['destination-options'])
+  )
   set(body, 'url', flags.url)
   set(body, 'event_types', csv(flags.events))
   set(body, 'destination_filter_mode', flags['destination-filter'])
@@ -529,7 +542,8 @@ async function requestBody(operation, parsed, io) {
             ...(flags['media-item'] !== undefined
               ? { media_items: threadMediaItems(flags['media-item']) }
               : { media: csv(flags.media) ?? [] }),
-            options: jsonValue(flags.options) ?? null,
+            destination_options:
+              jsonValue(flags['destination-options']) ?? null,
           },
         ],
       }
@@ -915,8 +929,10 @@ function queryFrom(flags, operation) {
   )
   const names = [
     ...(operation.paginated ? ['after'] : []),
-    ...(operation.id === 'listPosts' ? ['view', 'channel', 'group'] : []),
-    ...(operation.id === 'getAsset' ? ['include'] : []),
+    ...(operation.id === 'listPosts'
+      ? ['view', 'channel', 'group', 'state', 'include']
+      : []),
+    ...(['getAsset', 'getPost'].includes(operation.id) ? ['include'] : []),
     ...(operation.id === 'getAnalyticsReport'
       ? ['from', 'until', 'channel', 'after', 'limit']
       : []),
@@ -926,6 +942,15 @@ function queryFrom(flags, operation) {
       ? { bucket: flags.bucket ?? 'day' }
       : {}),
     ...(operation.paginated && pageSize ? { limit: pageSize } : {}),
+    ...(operation.id === 'listPosts' && flags.destination !== undefined
+      ? { destination_id: flags.destination }
+      : {}),
+    ...(operation.id === 'listPosts' && flags['created-after'] !== undefined
+      ? { created_after: flags['created-after'] }
+      : {}),
+    ...(operation.id === 'listPosts' && flags['scheduled-before'] !== undefined
+      ? { scheduled_before: flags['scheduled-before'] }
+      : {}),
     ...Object.fromEntries(
       names.flatMap((name) =>
         flags[name] === undefined ? [] : [[name, flags[name]]]
@@ -1537,10 +1562,10 @@ function helpFor(command) {
         ? ' Use --post, --expected-scheduled-at, and --local-date for one Post. Use --file for an atomic multi-Post move.'
       : operation.id === 'patchDestination'
         ? ' Use --queue-policy <json> or provide a complete JSON request body.'
-      : operation.id === 'putWritingRefinementSettings'
-        ? ' Provide a complete JSON request body with an actions object for all seven refinement options. Each action requires title, prompt, and icon.'
       : operation.id === 'listPosts'
-        ? ' Use --view all|drafts|scheduled|published|attention|failed to filter by state, --channel <channel> to filter by channel, and --group <group> to filter by post group.'
+        ? ' Use --view, --state, --channel, --group, --destination, --created-after, or --scheduled-before to filter Posts. Use --include attempts for attempt diagnostics.'
+      : operation.id === 'retryPost'
+        ? ' A Post with retry_safety may_duplicate also requires --acknowledge-duplicate-risk. Verify the provider before you use this flag.'
       : operation.id === 'validateAsset'
         ? ' Provide at least one target: --channel <channel> and/or --destination <id> (repeat either to check several).'
       : operation.id === 'submitFeedback'
