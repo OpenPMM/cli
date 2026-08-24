@@ -11,6 +11,13 @@ import {
 import { homedir, hostname } from 'node:os'
 import { basename, dirname, extname, join } from 'node:path'
 import { stdin, stdout, stderr } from 'node:process'
+import {
+  flagsForConvenienceCommand,
+  flagsForOperation,
+  formatFlagHelp,
+  unsupportedFlags,
+} from './command-contract.js'
+import { compareApiCoverage } from './api-coverage.js'
 import { Crc64Nvme, crc64NvmeBase64 } from './crc64.js'
 import { OPERATIONS, OPERATION_BY_COMMAND } from './operations.js'
 import {
@@ -19,7 +26,7 @@ import {
   normalizeApiBaseUrl,
 } from './transport.js'
 
-export const VERSION = '0.3.0'
+export const VERSION = '0.4.0'
 const DEFAULT_API_BASE_URL = 'https://api.openpmm.com/v1'
 const ASSET_UPLOAD_PART_SIZE = 8 * 1024 * 1024
 const CONFIG_HOME =
@@ -49,12 +56,18 @@ export async function run(
     }
 
     const special = parsed.words.slice(0, 2).join(' ')
-    if (special === 'auth login')
+    if (special === 'auth login') {
+      validateCommandFlags(parsed.flags, flagsForConvenienceCommand(special), special)
       return await authLogin(parsed, io, dependencies)
-    if (special === 'auth logout')
+    }
+    if (special === 'auth logout') {
+      validateCommandFlags(parsed.flags, flagsForConvenienceCommand(special), special)
       return await authLogout(parsed, io, dependencies)
-    if (special === 'webhooks verify')
+    }
+    if (special === 'webhooks verify') {
+      validateCommandFlags(parsed.flags, flagsForConvenienceCommand(special), special)
       return await verifyWebhookSignature(parsed, io)
+    }
 
     if (parsed.flags['dry-run']) {
       throw new CliError(
@@ -63,20 +76,32 @@ export async function run(
       )
     }
 
-    const assetWorkflow = ['assets upload', 'assets download'].includes(special)
+    const localWorkflow = [
+      'assets upload',
+      'assets download',
+      'posts wait',
+      'doctor',
+    ].includes(special)
       ? special
       : null
 
-    const match = assetWorkflow
+    const match = localWorkflow
       ? null
       : (matchAnalyticsCommand(parsed) ?? matchCommand(parsed.words))
-    if (!match && !assetWorkflow)
+    if (!match && !localWorkflow)
       throw new CliError(
         `Unknown command: ${parsed.words.join(' ')}. Run \`openpmm --help\` to see commands.`,
         { exitCode: 2 }
       )
+    validateCommandFlags(
+      parsed.flags,
+      localWorkflow
+        ? flagsForConvenienceCommand(localWorkflow)
+        : flagsForOperation(match.operation),
+      localWorkflow ?? match.operation.command
+    )
     if (parsed.flags.help)
-      return write(io.stdout, helpFor(assetWorkflow ?? match.operation.command))
+      return write(io.stdout, helpFor(localWorkflow ?? match.operation.command))
     if (match?.operation.confirm && !parsed.flags.yes)
       throw new CliError(
         `This command can publish, disconnect, or delete data. Review it, then rerun with --yes.`,
@@ -99,9 +124,10 @@ export async function run(
         DEFAULT_API_BASE_URL
     )
     const anonymous = match?.operation.authentication === 'none'
+    const environmentApiKey = process.env.OPENPMM_API_KEY
     const apiKey = anonymous
       ? null
-      : process.env.OPENPMM_API_KEY ??
+      : environmentApiKey ??
         (await storedCredential(
           baseUrl,
           dependencies.credentialPath ?? CREDENTIAL_PATH
@@ -114,12 +140,21 @@ export async function run(
       stderr: io.stderr,
       userAgent: `@openpmm/cli/${VERSION} (${process.platform}; ${process.arch})`,
     })
+    if (localWorkflow === 'doctor')
+      return await runDoctor(
+        transport,
+        baseUrl,
+        environmentApiKey ? 'environment' : 'store',
+        parsed,
+        io,
+        dependencies
+      )
     const workspace = await resolveWorkspace(
       transport,
       parsed.flags.workspace ?? process.env.OPENPMM_WORKSPACE ?? undefined,
       {
         required:
-          Boolean(assetWorkflow) ||
+          Boolean(localWorkflow) ||
           Boolean(match.operation.path.includes('{workspace_id}')),
         baseUrl,
         useStoredWorkspace: !process.env.OPENPMM_API_KEY,
@@ -127,7 +162,7 @@ export async function run(
       }
     )
     if (
-      (assetWorkflow || match.operation.path.includes('{workspace_id}')) &&
+      (localWorkflow || match.operation.path.includes('{workspace_id}')) &&
       !workspace
     )
       throw new CliError(
@@ -135,13 +170,21 @@ export async function run(
         { exitCode: 2 }
       )
 
-    if (assetWorkflow === 'assets upload') {
+    if (localWorkflow === 'assets upload') {
       recoveryKey = parsed.flags['idempotency-key'] ?? randomUUID()
       parsed.flags['idempotency-key'] = recoveryKey
       return await uploadAsset(transport, workspace, parsed, io)
     }
-    if (assetWorkflow === 'assets download')
+    if (localWorkflow === 'assets download')
       return await downloadAsset(transport, workspace, parsed, io)
+    if (localWorkflow === 'posts wait')
+      return await waitForPostCommand(
+        transport,
+        workspace,
+        parsed,
+        io,
+        dependencies
+      )
 
     const path = fillPath(
       match.operation.path,
@@ -151,6 +194,16 @@ export async function run(
     )
     let body = await requestBody(match.operation, parsed, io)
     let etag = parsed.flags.etag
+
+    if (
+      parsed.flags.wait &&
+      ['createPosts', 'publishPosts'].includes(match.operation.id) &&
+      (body?.when ?? 'now') !== 'now'
+    )
+      throw new CliError(
+        '--wait is available only for immediate publication. Scheduled and queued Posts need no immediate status polling.',
+        { exitCode: 2 }
+      )
 
     if (match.operation.id === 'createPosts' && body?.when !== 'draft') {
       if (!parsed.flags.yes)
@@ -239,17 +292,50 @@ export async function run(
             dependencies.sleep ?? defaultSleep
           )
         : null
+    const publicationWait =
+      parsed.flags.wait &&
+      ['createPosts', 'publishPosts'].includes(match.operation.id)
+        ? await waitForPostSet(
+            transport,
+            workspace,
+            result.data,
+            parsed,
+            dependencies,
+            result.headers.get('retry-after')
+          )
+        : null
+    const data = publicationWait?.data ?? waited?.data ?? result.data
+    const publication =
+      match.operation.id === 'publishPosts' ||
+      (match.operation.id === 'createPosts' && body?.when !== 'draft')
+      ? publicationMetadata(data, body?.when ?? 'now', workspace, {
+          waited: Boolean(publicationWait),
+          waitComplete: publicationWait?.complete,
+        })
+      : null
     const output = {
-      data: waited?.data ?? result.data,
+      data,
       meta: {
         request_id: result.requestId,
         idempotency_key: idempotencyKey,
         operation_id: match.operation.id,
         ...httpResponseMetadata(result),
         ...(waited ? { waited: true } : {}),
+        ...(publicationWait
+          ? {
+              waited: true,
+              wait_complete: publicationWait.complete,
+            }
+          : {}),
+        ...(publication ? { publication } : {}),
       },
     }
     renderSuccess(output, parsed.flags, io)
+    if (publication?.pending_post_ids.length && !parsed.flags.json)
+      write(
+        io.stderr,
+        `OpenPMM accepted the publication. Provider work is still active. Run: ${publication.next_command}\n`
+      )
     return 0
   } catch (error) {
     const normalized =
@@ -343,6 +429,7 @@ const VALUE_FLAGS = new Set([
   'until',
   'url',
   'view',
+  'wait-timeout',
   'when',
   'workspace',
   'workspace-name',
@@ -381,6 +468,16 @@ function parseArguments(argv) {
       flags[name] === undefined ? value : [...asArray(flags[name]), value]
   }
   return { words, flags }
+}
+
+function validateCommandFlags(flags, allowedFlags, command) {
+  const unsupported = unsupportedFlags(flags, allowedFlags)
+  if (unsupported.length === 0) return
+  const rendered = unsupported.map((name) => `--${name}`).join(', ')
+  throw new CliError(
+    `${rendered} ${unsupported.length === 1 ? 'is' : 'are'} not available for \`openpmm ${command}\`. Run \`openpmm ${command} --help\` to see accepted flags.`,
+    { exitCode: 2 }
+  )
 }
 
 function threadMediaItems(value) {
@@ -665,6 +762,347 @@ async function waitForAnalytics(transport, refreshResult, sleep) {
     if (!pending) return latest
   }
   return latest
+}
+
+async function waitForPostCommand(
+  transport,
+  workspace,
+  parsed,
+  io,
+  dependencies
+) {
+  const postIds = parsed.words.slice(2)
+  if (postIds.length === 0)
+    throw new CliError(
+      'Usage: openpmm posts wait <post_id> [<post_id>...] --workspace <id>.',
+      { exitCode: 2 }
+    )
+  const posts = await Promise.all(
+    postIds.map(async (postId) => {
+      const result = await transport.request({
+        method: 'GET',
+        path: `/workspaces/${encodeURIComponent(workspace)}/posts/${encodeURIComponent(postId)}`,
+      })
+      return result.data
+    })
+  )
+  const waited = await waitForPosts(
+    transport,
+    workspace,
+    posts,
+    parsed,
+    dependencies
+  )
+  const data = { object: 'post_set', group: null, posts: waited.posts }
+  const publication = publicationMetadata(data, 'now', workspace, {
+    waited: true,
+    waitComplete: waited.complete,
+  })
+  const output = {
+    data,
+    meta: {
+      request_id: null,
+      idempotency_key: null,
+      operation_id: 'waitPosts',
+      waited: true,
+      wait_complete: waited.complete,
+      publication,
+    },
+  }
+  if (parsed.flags.quiet) {
+    const status = publication.action_required_post_ids.length
+      ? 'attention'
+      : publication.complete
+        ? 'complete'
+        : 'pending'
+    return write(io.stdout, `${status}\n`)
+  }
+  renderSuccess(output, parsed.flags, io)
+  if (!waited.complete && !parsed.flags.json)
+    write(
+      io.stderr,
+      `Provider work is still active. Run the same command again: ${publication.next_command}\n`
+    )
+  return 0
+}
+
+async function waitForPostSet(
+  transport,
+  workspace,
+  postSet,
+  parsed,
+  dependencies,
+  retryAfter
+) {
+  const waited = await waitForPosts(
+    transport,
+    workspace,
+    Array.isArray(postSet?.posts) ? postSet.posts : [],
+    parsed,
+    dependencies,
+    retryAfter
+  )
+  return {
+    complete: waited.complete,
+    data: { ...postSet, posts: waited.posts },
+  }
+}
+
+async function waitForPosts(
+  transport,
+  workspace,
+  initialPosts,
+  parsed,
+  dependencies,
+  initialRetryAfter = null
+) {
+  const timeoutSeconds = positiveIntegerFlag(
+    parsed.flags['wait-timeout'] ?? '300',
+    'wait-timeout'
+  )
+  const sleep = dependencies.sleep ?? defaultSleep
+  const posts = new Map(
+    initialPosts.flatMap((post) =>
+      typeof post?.id === 'string' ? [[post.id, post]] : []
+    )
+  )
+  let elapsedSeconds = 0
+  let delaySeconds = boundedRetryAfter(initialRetryAfter)
+  let activeIds = activePublicationIds([...posts.values()])
+  while (activeIds.length > 0 && elapsedSeconds < timeoutSeconds) {
+    const remaining = timeoutSeconds - elapsedSeconds
+    const currentDelay = Math.min(delaySeconds, remaining)
+    await sleep(currentDelay * 1000)
+    elapsedSeconds += currentDelay
+    const latest = await Promise.all(
+      activeIds.map(async (postId) => {
+        const result = await transport.request({
+          method: 'GET',
+          path: `/workspaces/${encodeURIComponent(workspace)}/posts/${encodeURIComponent(postId)}`,
+        })
+        return result.data
+      })
+    )
+    for (const post of latest) if (post?.id) posts.set(post.id, post)
+    activeIds = activePublicationIds([...posts.values()])
+    delaySeconds = 5
+  }
+  return {
+    complete: activeIds.length === 0,
+    posts: initialPosts.map((post) => posts.get(post.id) ?? post),
+  }
+}
+
+function boundedRetryAfter(value) {
+  const seconds = Number(value)
+  return Number.isInteger(seconds) && seconds > 0
+    ? Math.min(seconds, 30)
+    : 2
+}
+
+function activePublicationIds(posts) {
+  return posts
+    .filter((post) => {
+      if (post?.terminal === true) return false
+      if (post?.action_required === true) return false
+      if (['published', 'cancelled'].includes(post?.state))
+        return false
+      if (['needs-attention', 'missed'].includes(post?.state))
+        return false
+      if (post?.state === 'failed' && !post?.next_action_at) return false
+      return !['draft', 'scheduled'].includes(post?.state)
+    })
+    .map((post) => post.id)
+    .filter(Boolean)
+}
+
+function publicationMetadata(data, when, workspace, wait) {
+  const posts = Array.isArray(data?.posts) ? data.posts : []
+  const pendingPostIds =
+    when === 'now' ? activePublicationIds(posts) : []
+  const actionRequiredPostIds =
+    when === 'now'
+      ? posts
+          .filter(
+            (post) =>
+              post?.action_required === true ||
+              ['needs-attention', 'missed'].includes(post?.state) ||
+              (post?.state === 'failed' && !post?.next_action_at)
+          )
+          .map((post) => post.id)
+          .filter(Boolean)
+      : []
+  return {
+    mode: when === 'now' ? 'immediate' : 'scheduled',
+    complete:
+      pendingPostIds.length === 0 && actionRequiredPostIds.length === 0,
+    pending_post_ids: pendingPostIds,
+    action_required_post_ids: actionRequiredPostIds,
+    ...(wait.waited ? { waited: true, wait_complete: wait.waitComplete } : {}),
+    ...(pendingPostIds.length
+      ? {
+          next_command: `openpmm posts wait ${pendingPostIds.join(' ')} --workspace ${workspace} --json`,
+        }
+      : {}),
+  }
+}
+
+async function runDoctor(
+  transport,
+  baseUrl,
+  credentialSource,
+  parsed,
+  io,
+  dependencies
+) {
+  const credentialPath = dependencies.credentialPath ?? CREDENTIAL_PATH
+  const [accountResult, workspaceResult, contract] = await Promise.all([
+    transport.request({ method: 'GET', path: '/account' }),
+    transport.request({ method: 'GET', path: '/workspaces', query: { limit: 100 } }),
+    readPublicContract(transport.fetchImpl, baseUrl),
+  ])
+  const workspaces = Array.isArray(workspaceResult.data?.data)
+    ? workspaceResult.data.data
+    : []
+  const storedWorkspace =
+    credentialSource === 'store'
+      ? (await readCredentialStore(credentialPath)).workspaces[baseUrl]
+      : null
+  const explicitWorkspace = parsed.flags.workspace
+  const environmentWorkspace = process.env.OPENPMM_WORKSPACE
+  const selectedWorkspaceId =
+    explicitWorkspace ??
+    environmentWorkspace ??
+    storedWorkspace ??
+    (workspaces.length === 1 ? workspaces[0]?.id : null)
+  const selectedWorkspace = workspaces.find(
+    (workspace) => workspace.id === selectedWorkspaceId
+  )
+  const selectionSource = explicitWorkspace
+    ? 'flag'
+    : environmentWorkspace
+      ? 'environment'
+      : storedWorkspace
+        ? 'credential_store'
+        : workspaces.length === 1
+          ? 'only_workspace'
+          : null
+  const destinationResult = selectedWorkspace
+    ? await transport.request({
+        method: 'GET',
+        path: `/workspaces/${encodeURIComponent(selectedWorkspace.id)}/destinations`,
+      })
+    : null
+  const destinations = Array.isArray(destinationResult?.data?.data)
+    ? destinationResult.data.data
+    : []
+  const readyDestinations = destinations
+    .filter((destination) => destination.status === 'ready')
+    .map((destination) => ({
+      id: destination.id,
+      channel: destination.channel,
+      display_name: destination.display_name,
+    }))
+  const coverage = compareApiCoverage(contract)
+  const compatible =
+    coverage.missingFromCli.length === 0 &&
+    coverage.missingFromApi.length === 0 &&
+    coverage.duplicateCliOperations.length === 0 &&
+    coverage.mismatchedOperationIds.length === 0 &&
+    coverage.mismatchedCommands.length === 0
+  const status =
+    compatible && selectedWorkspace && readyDestinations.length > 0
+      ? 'ready'
+      : 'attention'
+  const authentication = accountResult.data?.authentication ?? {}
+  const data = {
+    object: 'cli_doctor',
+    status,
+    cli_version: VERSION,
+    api: {
+      base_url: baseUrl,
+      contract_version: contract.info?.version ?? null,
+      compatible,
+      missing_from_cli: coverage.missingFromCli,
+      missing_from_api: coverage.missingFromApi,
+      duplicate_cli_operations: coverage.duplicateCliOperations,
+      mismatched_operation_ids: coverage.mismatchedOperationIds,
+      mismatched_commands: coverage.mismatchedCommands,
+    },
+    authentication: {
+      source: credentialSource,
+      account_id: accountResult.data?.id ?? null,
+      account_name: accountResult.data?.name ?? null,
+      credential_id: authentication.credential_id ?? null,
+      credential_prefix: authentication.prefix ?? null,
+      credential_name: authentication.name ?? null,
+      environment: authentication.environment ?? null,
+      workspace_access_mode: authentication.workspace_access_mode ?? null,
+      scopes: authentication.scopes ?? [],
+      expires_at: authentication.expires_at ?? null,
+    },
+    credential_store: {
+      managed_by_cli: credentialSource === 'store',
+      path: credentialSource === 'store' ? credentialPath : null,
+      permissions:
+        credentialSource === 'store'
+          ? process.platform === 'win32'
+            ? 'not_checked'
+            : 'safe'
+          : 'not_applicable',
+    },
+    workspace: {
+      selection_source: selectionSource,
+      selected: selectedWorkspace
+        ? {
+            id: selectedWorkspace.id,
+            name: selectedWorkspace.name,
+            slug: selectedWorkspace.slug,
+          }
+        : null,
+      available_count: workspaces.length,
+    },
+    destinations: {
+      ready_count: readyDestinations.length,
+      ready: readyDestinations,
+    },
+  }
+  if (parsed.flags.quiet) return write(io.stdout, `${status}\n`)
+  renderSuccess(
+    {
+      data,
+      meta: {
+        request_id: accountResult.requestId,
+        idempotency_key: null,
+        operation_id: 'doctor',
+      },
+    },
+    parsed.flags,
+    io
+  )
+  return 0
+}
+
+async function readPublicContract(fetchImpl, baseUrl) {
+  const response = await fetchImpl(`${baseUrl}/openapi.json`, {
+    headers: {
+      Accept: 'application/json',
+      'User-Agent': `@openpmm/cli/${VERSION} compatibility-check`,
+    },
+    signal: AbortSignal.timeout(30_000),
+  })
+  if (!response.ok)
+    throw new CliError(
+      `The public API contract check failed with HTTP ${response.status}.`,
+      { exitCode: 8 }
+    )
+  try {
+    return await response.json()
+  } catch {
+    throw new CliError('The public API contract is not valid JSON.', {
+      exitCode: 8,
+    })
+  }
 }
 
 async function uploadAsset(transport, workspace, parsed, io) {
@@ -1519,29 +1957,35 @@ function renderError(error, flags, io) {
 
 function helpFor(command) {
   if (!command)
-    return `OpenPMM CLI ${VERSION}\n\nUse every OpenPMM customer workflow through the public /v1 API.\n\nCommon path:\n  openpmm signup create --email you@example.com --workspace-name "Product Marketing" --authorize-cli\n  openpmm posts create --when draft --channel x --body "Draft copy"\n  openpmm posts list --view drafts --json\n  openpmm posts publish --post send_... --post-version 1 --destination dest_... --yes\n\nCommands:\n${[
+    return `OpenPMM CLI ${VERSION}\n\nUse every OpenPMM customer workflow through the public /v1 API.\n\nFor CLI-managed agent workflows, invoke openpmm for every OpenPMM operation. Never read or export the CLI credential store. Use a separate API credential for an intentional direct /v1 integration.\n\nCommon path:\n  openpmm signup create --email you@example.com --workspace-name "Product Marketing" --authorize-cli\n  openpmm posts create --when draft --channel x --body "Draft copy"\n  openpmm posts list --view drafts --json\n  openpmm posts publish --post send_... --post-version 1 --destination dest_... --yes --wait\n\nCommands:\n${[
       ...new Set(OPERATIONS.map((operation) => operation.command)),
       'auth logout',
       'assets download',
       'assets upload',
+      'doctor',
+      'posts wait',
       'webhooks verify',
     ]
       .sort()
       .map((value) => `  ${value}`)
       .join(
         '\n'
-      )}\n\nGlobal flags:\n  --workspace <id>       Workspace ID. Omit when the key has one Workspace.\n  --api-base-url <url>   Public API origin (or OPENPMM_API_BASE_URL)\n  --file <path|->        Complete JSON request body\n  --json, -json          Stable JSON output\n  --jsonl                One list item per line\n  --limit <count>        Bound total list items\n  --page-size <count>    Control the public API page size\n  --etag <value>         If-Match value for an update; read automatically when omitted\n  --idempotency-key <k>  Safe-retry key for a create/publish; generated when omitted\n  --quiet                IDs only\n  --yes                  Confirm publishing or destructive work\n  --help                  Show help\n  --version               Show version\n\nRun openpmm <command> --help for command details.\n`
+      )}\n\nCommon flags:\n${formatFlagHelp(['workspace', 'api-base-url', 'json', 'no-color', 'help'])}\n  --version${' '.repeat(21)}Show the CLI version.\n\nRun openpmm <command> --help for the complete command-specific flag table.\n`
   const convenienceHelp = {
     'auth login':
-      'openpmm auth login [--no-open] [--no-wait | --resume]\n\nOpen a browser to sign in and authorize the CLI. Use --no-wait for safe agent-readable metadata, then --resume after browser approval. OpenPMM stores the resulting API key and selected Workspace in ~/.config/openpmm/credentials.json (or $XDG_CONFIG_HOME/openpmm) with user-only permissions. Use --with-token only to import an existing API key from stdin.\n',
+      `auth login\n\nUsage:\n  openpmm auth login [flags]\n\nOpen a browser to sign in and authorize the CLI. Use --no-wait for safe agent-readable metadata. Use --resume after browser approval.\n\nThe CLI owns the saved API credential and selected Workspace. The credential file is an internal implementation detail. Do not read, parse, copy, export, or reuse it from another program. Use a separate API credential for an intentional direct /v1 integration.\n\nFlags:\n${formatFlagHelp(flagsForConvenienceCommand('auth login'))}\n`,
     'auth logout':
-      'openpmm auth logout [--api-base-url <url>]\n\nRemove the saved login for the selected API base URL. The command reports when no saved login exists.\n',
+      `auth logout\n\nUsage:\n  openpmm auth logout [flags]\n\nRemove the saved login for the selected API base URL. This command does not revoke the API credential.\n\nFlags:\n${formatFlagHelp(flagsForConvenienceCommand('auth logout'))}\n`,
+    doctor:
+      `doctor\n\nUsage:\n  openpmm doctor [flags]\n\nCheck CLI and API compatibility, authentication, scopes, Workspace selection, credential-store permissions, and ready Destinations. This command never prints an API key.\n\nFlags:\n${formatFlagHelp(flagsForConvenienceCommand('doctor'))}\n`,
     'assets upload':
-      'openpmm assets upload <path> --workspace <id> [--kind card|reel|poster] [--content-type <type>]\n\nCreate an upload session, stream the file to storage, and complete it through public /v1 operations.\n',
+      `assets upload\n\nUsage:\n  openpmm assets upload <path> [flags]\n\nCreate an upload session, stream the file to storage, and complete it through public /v1 operations.\n\nFlags:\n${formatFlagHelp(flagsForConvenienceCommand('assets upload'))}\n`,
     'assets download':
-      'openpmm assets download <asset_id> --workspace <id> --output <path|->\n\nRequest a short-lived download URL through the public /v1 API, then download the asset. Existing files are not overwritten.\n',
+      `assets download\n\nUsage:\n  openpmm assets download <asset_id> [flags]\n\nRequest a short-lived download URL through the public /v1 API, then download the Asset. Existing files are not overwritten.\n\nFlags:\n${formatFlagHelp(flagsForConvenienceCommand('assets download'))}\n`,
+    'posts wait':
+      `posts wait\n\nUsage:\n  openpmm posts wait <post_id> [<post_id>...] [flags]\n\nWait for bounded immediate publication work. The command polls only through the public Post operation. Do not send posts publish again.\n\nFlags:\n${formatFlagHelp(flagsForConvenienceCommand('posts wait'))}\n`,
     'webhooks verify':
-      'openpmm webhooks verify --signature <header> --file <payload|-> [--secret-file <path>] [--tolerance-seconds 300]\n\nVerify OpenPMM-Signature against the exact payload bytes. Set OPENPMM_WEBHOOK_SECRET or pass a protected secret file. This local command does not call the API.\n',
+      `webhooks verify\n\nUsage:\n  openpmm webhooks verify [flags]\n\nVerify OpenPMM-Signature against the exact payload bytes. Set OPENPMM_WEBHOOK_SECRET or pass a protected secret file. This local command does not call the API.\n\nFlags:\n${formatFlagHelp(flagsForConvenienceCommand('webhooks verify'))}\n`,
   }
   if (convenienceHelp[command]) return convenienceHelp[command]
   const operation = OPERATION_BY_COMMAND.get(command)
@@ -1557,13 +2001,15 @@ function helpFor(command) {
       ? 'Requires --yes. This schedules Workspace subscription cancellation at the paid term end.'
       : operation.path.startsWith('/billing')
         ? 'Requires --yes. This can start or charge a subscription.'
+        : operation.id === 'publishPosts'
+          ? 'Requires --yes. This can create external provider posts.'
         : 'Requires --yes. This can publish, disconnect, or delete data.'
     : operation.id === 'createPosts'
       ? 'Requires --yes unless the request creates a draft.'
       : 'No extra confirmation.'
   const inputNote =
     operation.id === 'publishPosts'
-      ? ' Include every draft Post in the group. Use --at queue to use the next destination queue slot.'
+      ? ' Include every draft Post in the group. Use --at queue to use the next destination queue slot. Exit 0 means OpenPMM accepted the state change. Add --wait for bounded publication status handling. The wait stops when each Post is terminal or needs action. Do not send publish again for a pending Post.'
       : operation.id === 'createPosts'
         ? ' Use --when queue to use the next destination queue slot. Repeat --body in order to publish a self-reply chain on X, Bluesky, Mastodon, or Threads. Repeat --media-item <body-index>:<asset-id> to attach media to a specific item.'
       : operation.id === 'patchPost'
@@ -1597,7 +2043,7 @@ function helpFor(command) {
       : ['getPostGroupAnalytics', 'refreshPostGroupAnalytics'].includes(operation.id)
         ? ' Use --group <group>. Refresh returns per-Post outcomes. Add --wait to poll for a bounded time.'
       : ''
-  return `${command}\n\nUsage:\n  openpmm ${command}${positional ? ` ${positional}` : ''} [flags]\n\n${operationTitle(operation)} through the public API.\nCalls ${operation.method} ${operation.path}.\nRequired scope: ${scopeFor(operation)}\nWorkspace: ${operation.path.includes('{workspace_id}') ? 'required' : 'not required'}\nSide effects: ${sideEffects}\nInput: common flags or --file <request.json>; use --file - for stdin.${inputNote}\nOutput: human by default; --json, -json, --jsonl (lists), or --quiet.\nRelevant exits: 0 success, 1 error, 2 input, 3 auth, 4 scope, 5 not found, 6 conflict, 7 validation, 8 unavailable, 9 ambiguous, 10 confirmation.\n\nExample:\n  openpmm ${command} ${positional} ${operation.path.includes('{workspace_id}') ? '--workspace ws_01JABCDEF ' : ''}${operation.body ? '--file request.json ' : ''}${confirmation ? '--yes ' : ''}--json\n`
+  return `${command}\n\nUsage:\n  openpmm ${command}${positional ? ` ${positional}` : ''} [flags]\n\n${operationTitle(operation)} through the public API.\nCalls ${operation.method} ${operation.path}.\nRequired scope: ${scopeFor(operation)}\nWorkspace: ${operation.path.includes('{workspace_id}') ? 'required' : 'not required'}\nSide effects: ${sideEffects}\nInput: flags or --file <request.json>; use --file - for stdin.${inputNote}\nOutput: human by default. Use the output flags below for automation.\nRelevant exits: 0 success, 1 error, 2 input, 3 auth, 4 scope, 5 not found, 6 conflict, 7 validation, 8 unavailable, 9 ambiguous, 10 confirmation.\n\nFlags:\n${formatFlagHelp(flagsForOperation(operation))}\n\nExample:\n  openpmm ${command}${positional ? ` ${positional}` : ''}${operation.path.includes('{workspace_id}') ? ' --workspace ws_01JABCDEF' : ''}${operation.body ? ' --file request.json' : ''}${confirmation ? ' --yes' : ''} --json\n`
 }
 
 function requiresConfirmation(operation) {

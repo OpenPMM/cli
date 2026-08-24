@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { compareApiCoverage } from '../scripts/check-api-coverage.js'
+import { compareApiCoverage } from '../src/api-coverage.js'
 import { OPERATIONS } from '../src/operations.js'
 
 function apiDocument() {
@@ -8,6 +8,7 @@ function apiDocument() {
   for (const operation of OPERATIONS) {
     const pathItem = (paths[operation.path] ??= {})
     pathItem[operation.method.toLowerCase()] = {
+      operationId: operation.id,
       'x-openpmm-cli-command': operation.command,
     }
   }
@@ -21,7 +22,23 @@ test('deployed API coverage includes every CLI command name', () => {
   assert.deepEqual(result.missingFromCli, [])
   assert.deepEqual(result.missingFromApi, [])
   assert.deepEqual(result.duplicateCliOperations, [])
+  assert.deepEqual(result.mismatchedOperationIds, [])
   assert.deepEqual(result.mismatchedCommands, [])
+})
+
+test('deployed API coverage reports an operation ID rename', () => {
+  const document = apiDocument()
+  const operation = OPERATIONS[0]
+  document.paths[operation.path][operation.method.toLowerCase()].operationId =
+    'renamedOperation'
+
+  assert.deepEqual(compareApiCoverage(document).mismatchedOperationIds, [
+    {
+      route: `${operation.method} ${operation.path}`,
+      expected: 'renamedOperation',
+      actual: operation.id,
+    },
+  ])
 })
 
 test('deployed API coverage reports a command rename', () => {

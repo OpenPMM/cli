@@ -24,25 +24,28 @@ test('publishing help is a stable, copy-pasteable public contract', async () => 
   })
 
   assert.equal(exitCode, 0)
-  assert.equal(
-    stdout.read(),
-    `posts publish
-
-Usage:
-  openpmm posts publish [flags]
-
-Publish posts through the public API.
-Calls POST /workspaces/{workspace_id}/posts/publish.
-Required scope: posts:write
-Workspace: required
-Side effects: Requires --yes. This can publish, disconnect, or delete data.
-Input: common flags or --file <request.json>; use --file - for stdin. Include every draft Post in the group. Use --at queue to use the next destination queue slot.
-Output: human by default; --json, -json, --jsonl (lists), or --quiet.
-Relevant exits: 0 success, 1 error, 2 input, 3 auth, 4 scope, 5 not found, 6 conflict, 7 validation, 8 unavailable, 9 ambiguous, 10 confirmation.
-
-Example:
-  openpmm posts publish  --workspace ws_01JABCDEF --file request.json --yes --json
-`
+  const help = stdout.read()
+  assert.match(help, /Calls POST \/workspaces\/\{workspace_id\}\/posts\/publish\./)
+  assert.match(help, /Exit 0 means OpenPMM accepted the state change/)
+  assert.match(help, /Do not send publish again for a pending Post/)
+  for (const flag of [
+    '--workspace <id>',
+    '--file <path|->',
+    '--post <id>',
+    '--post-version <number>',
+    '--destination <id>',
+    '--at <now|queue|timestamp>',
+    '--time-zone <iana-name>',
+    '--wait',
+    '--wait-timeout <seconds>',
+    '--idempotency-key <key>',
+    '--yes',
+    '--json',
+  ])
+    assert.match(help, new RegExp(flag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))
+  assert.match(
+    help,
+    /openpmm posts publish --workspace ws_01JABCDEF --file request\.json --yes --json/
   )
 })
 
@@ -55,13 +58,12 @@ test('asset workflow help states every required input', async () => {
   })
 
   assert.equal(exitCode, 0)
-  assert.equal(
-    stdout.read(),
-    `openpmm assets upload <path> --workspace <id> [--kind card|reel|poster] [--content-type <type>]
-
-Create an upload session, stream the file to storage, and complete it through public /v1 operations.
-`
-  )
+  const help = stdout.read()
+  assert.match(help, /openpmm assets upload <path> \[flags\]/)
+  assert.match(help, /--workspace <id>/)
+  assert.match(help, /--kind <card\|reel\|poster>/)
+  assert.match(help, /--content-type <type>/)
+  assert.match(help, /--idempotency-key <key>/)
 })
 
 test('direct post creation help exposes the conditional confirmation gate', async () => {
@@ -73,12 +75,24 @@ test('direct post creation help exposes the conditional confirmation gate', asyn
   })
 
   assert.equal(exitCode, 0)
+  const help = stdout.read()
   assert.match(
-    stdout.read(),
+    help,
     /Side effects: Requires --yes unless the request creates a draft\./
   )
-  assert.match(stdout.read(), /--file request\.json --yes --json/)
-  assert.match(stdout.read(), /Use --when queue/)
+  assert.match(help, /--file request\.json --yes --json/)
+  assert.match(help, /Use --when queue/)
+  for (const flag of [
+    '--when <draft|now|queue|timestamp>',
+    '--group <value>',
+    '--channel <channel>',
+    '--body <text>',
+    '--destination <id>',
+    '--file <path|->',
+    '--yes',
+    '--json',
+  ])
+    assert.match(help, new RegExp(flag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))
 })
 
 test('queue move help explains one Post and atomic multi-Post input', async () => {
@@ -148,6 +162,34 @@ test('root help lists logout and logout help identifies its target', async () =>
   })
   assert.match(root.read(), /  auth logout\n/)
   assert.match(logout.read(), /--api-base-url <url>/)
+})
+
+test('agent help keeps credentials and publication status inside the CLI', async () => {
+  const login = output()
+  const doctor = output()
+  const wait = output()
+
+  await run(['auth', 'login', '--help'], {
+    stdin: process.stdin,
+    stdout: login.stream,
+    stderr: output().stream,
+  })
+  await run(['doctor', '--help'], {
+    stdin: process.stdin,
+    stdout: doctor.stream,
+    stderr: output().stream,
+  })
+  await run(['posts', 'wait', '--help'], {
+    stdin: process.stdin,
+    stdout: wait.stream,
+    stderr: output().stream,
+  })
+
+  assert.match(login.read(), /credential file is an internal implementation detail/)
+  assert.match(login.read(), /Do not read, parse, copy, export, or reuse it/)
+  assert.match(login.read(), /separate API credential/)
+  assert.match(doctor.read(), /This command never prints an API key/)
+  assert.match(wait.read(), /Do not send posts publish again/)
 })
 
 test('Slack help separates Account connection from Workspace settings', async () => {

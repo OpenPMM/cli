@@ -34,6 +34,25 @@ openpmm --version
 
 Node.js 22 or newer is required.
 
+For deterministic automation, pin the package version:
+
+```bash
+npx -y @openpmm/cli@0.4.0 doctor --json
+```
+
+If a global install succeeds but `openpmm` is not found, inspect the npm
+prefix and your shell path:
+
+```bash
+npm prefix --global
+printf '%s\n' "$PATH"
+```
+
+On macOS and Linux, the executable is normally in the `bin` directory under
+the printed prefix. Add that directory to your shell configuration, restart
+the shell, and run `openpmm --version` again. Use the pinned `npx` form when
+you cannot change `PATH`.
+
 ## Authenticate
 
 Authorize the CLI in your browser:
@@ -57,6 +76,30 @@ that variable is set. The CLI creates the directory with mode
 accessible by other users. `OPENPMM_API_KEY` and `auth login --with-token`
 remain available for CI and advanced use. Environment variables always take
 precedence over saved credentials.
+
+The saved file is a private CLI implementation detail. Its location is
+documented only for permission checks and logout recovery. Do not read, parse,
+copy, export, or reuse its API key from another program. If you intentionally
+use the public API, create a separate least-privilege API credential and supply
+it through your secret manager.
+
+## Agent rules
+
+For a CLI-managed agent workflow:
+
+1. Use `openpmm` for every OpenPMM operation.
+2. Never read or export the CLI credential store.
+3. Do not call `/v1` with the CLI-managed credential.
+4. Use `--file` for complete mutation requests and `--json` or `--jsonl` for
+   deterministic output.
+5. Do not send a publish request again when the CLI reports active provider
+   work. Use `posts wait` or `posts publish --wait`.
+
+The public `/v1` API remains a supported integration surface. A direct API
+workflow must use its own API credential. If a repository already contains a
+custom OpenPMM HTTP client, do not import the CLI credential into it. Keep the
+client on a dedicated credential, or migrate the workflow to CLI request
+files.
 
 ## Quick start
 
@@ -109,8 +152,24 @@ openpmm posts publish \
   --post-version 1 \
   --destination dest_... \
   --yes \
+  --wait \
   --json
 ```
+
+`posts publish` waits for the OpenPMM API response. Exit code `0` means that
+OpenPMM accepted or completed the requested state change. It does not always
+mean that provider work is complete.
+
+- A scheduled or queued result needs no immediate status polling.
+- An immediate result with `meta.publication.complete: true` is complete.
+- An immediate result with `meta.publication.pending_post_ids` still has
+  active provider work. Do not run `posts publish` again.
+- A result with `meta.publication.action_required_post_ids` needs review. Stop
+  and inspect each Post's `available_actions`.
+- Use `posts publish --wait` for a bounded wait, or run the returned
+  `meta.publication.next_command`.
+- Publication receipts are present in the returned Posts as soon as OpenPMM
+  stores them.
 
 For a complete request body, use a JSON file or stdin:
 
@@ -228,6 +287,23 @@ openpmm posts --help
 openpmm posts publish --help
 ```
 
+Each command help page lists every accepted flag, value shape, conditional
+requirement, side effect, and output mode. The CLI rejects a flag that belongs
+to another command before it sends a request.
+
+## Diagnose a setup
+
+Run one read-only check before an automated workflow:
+
+```bash
+openpmm doctor --json
+```
+
+The result includes the CLI version, public API compatibility, authenticated
+Account, safe API credential metadata, scopes, selected Workspace,
+credential-store permission status, and ready Destinations. It never prints an
+API key.
+
 ## Automation and output
 
 The CLI is designed for both people and agents:
@@ -251,8 +327,8 @@ environment. The default is `https://api.openpmm.com/v1`.
 
 - The CLI calls only OpenPMM's public `/v1` API.
 - It does not use private `/api` routes, a local database, or a browser session.
-- Workspace-scoped commands require an explicit workspace selector or
-  `OPENPMM_WORKSPACE`.
+- Workspace-scoped commands use an explicit, approved, stored, or only
+  available Workspace. They never guess when several are available.
 - Irreversible actions require explicit `--yes` confirmation.
 - Exit codes are stable: `0` success, `2` input, `3` authentication, `4`
   scope, `5` not found, `6` conflict, `7` validation, `8` unavailable, `9`

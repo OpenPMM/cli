@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import { Readable } from 'node:stream'
 import { test } from 'node:test'
 import { OPERATIONS } from '../src/operations.js'
-import { run } from '../src/openpmm.js'
+import { run, VERSION } from '../src/openpmm.js'
 import { crc64NvmeBase64 } from '../src/crc64.js'
 import { PublicApiTransport } from '../src/transport.js'
 
@@ -30,6 +30,55 @@ async function withApiKey(callback) {
   } finally {
     if (previous === undefined) delete process.env.OPENPMM_API_KEY
     else process.env.OPENPMM_API_KEY = previous
+  }
+}
+
+function doctorContract() {
+  const paths = {}
+  for (const operation of OPERATIONS) {
+    paths[operation.path] ??= {}
+    paths[operation.path][operation.method.toLowerCase()] = {
+      operationId: operation.id,
+      'x-openpmm-cli-command': operation.command,
+    }
+  }
+  return { info: { version: '1.0.0' }, paths }
+}
+
+function doctorFetch(contract, destinations) {
+  return async (url) => {
+    const value = String(url)
+    if (value.endsWith('/openapi.json'))
+      return new Response(JSON.stringify(contract), {
+        headers: { 'content-type': 'application/json' },
+      })
+    if (value.endsWith('/account'))
+      return new Response(
+        JSON.stringify({
+          id: 'acc_1',
+          name: 'Demo Account',
+          authentication: {
+            credential_id: 'key_1',
+            prefix: 'opm_live_safe-prefix',
+            name: 'CLI agent',
+            environment: 'live',
+            workspace_access_mode: 'selected',
+            scopes: ['posts:read', 'posts:write'],
+            expires_at: null,
+          },
+        }),
+        { headers: { 'content-type': 'application/json' } }
+      )
+    if (value.includes('/destinations'))
+      return new Response(JSON.stringify({ data: destinations }), {
+        headers: { 'content-type': 'application/json' },
+      })
+    return new Response(
+      JSON.stringify({
+        data: [{ id: 'ws_1', name: 'Demo', slug: 'demo' }],
+      }),
+      { headers: { 'content-type': 'application/json' } }
+    )
   }
 }
 
@@ -952,7 +1001,9 @@ test('feedback submission sends a message through the public API', async () => {
     message: 'The scheduled Posts view did not refresh.',
   })
   assert.equal(request.init.headers['Idempotency-Key'], 'feedback-request')
-  assert.match(request.init.headers['User-Agent'], /^@openpmm\/cli\/0\.3\.0 /)
+  assert.ok(
+    request.init.headers['User-Agent'].startsWith(`@openpmm/cli/${VERSION} `)
+  )
   assert.match(stdout.read(), /"feedback"/)
 })
 
@@ -1347,6 +1398,404 @@ test('JSON output preserves asynchronous HTTP acceptance metadata', async () => 
   assert.equal(parsed.meta.http_status, 202)
   assert.equal(parsed.meta.retry_after, '5')
   assert.equal(parsed.meta.location, '/v1/workspaces/ws_1/posts/send_1')
+  assert.equal(parsed.meta.publication.complete, false)
+  assert.deepEqual(parsed.meta.publication.pending_post_ids, ['send_1'])
+  assert.match(parsed.meta.publication.next_command, /openpmm posts wait send_1/)
+})
+
+test('a retryable failed Post remains pending publication work', async () => {
+  const out = output()
+  await withApiKey(async () => {
+    const exitCode = await run(
+      [
+        'posts',
+        'publish',
+        '--workspace',
+        'ws_1',
+        '--post',
+        'send_1',
+        '--post-version',
+        '1',
+        '--destination',
+        'dest_1',
+        '--yes',
+        '--json',
+      ],
+      {
+        stdin: process.stdin,
+        stdout: out.stream,
+        stderr: output().stream,
+      },
+      {
+        fetchImpl: async () =>
+          new Response(
+            JSON.stringify({
+              object: 'post_set',
+              posts: [
+                {
+                  id: 'send_1',
+                  state: 'failed',
+                  terminal: false,
+                  action_required: false,
+                  next_action_at: '2026-08-24T12:00:00.000Z',
+                },
+              ],
+            }),
+            {
+              status: 201,
+              headers: { 'content-type': 'application/json' },
+            }
+          ),
+      }
+    )
+    assert.equal(exitCode, 0)
+  })
+
+  const parsed = JSON.parse(out.read())
+  assert.equal(parsed.meta.publication.complete, false)
+  assert.deepEqual(parsed.meta.publication.pending_post_ids, ['send_1'])
+})
+
+test('a permanently failed Post stops waiting and requires action', async () => {
+  const out = output()
+  let calls = 0
+  await withApiKey(async () => {
+    const exitCode = await run(
+      ['posts', 'wait', 'send_1', '--workspace', 'ws_1', '--json'],
+      { stdin: process.stdin, stdout: out.stream, stderr: output().stream },
+      {
+        sleep: async () => {},
+        fetchImpl: async () => {
+          calls += 1
+          return new Response(
+            JSON.stringify({
+              id: 'send_1',
+              state: 'failed',
+              terminal: false,
+              action_required: false,
+              next_action_at: null,
+            }),
+            { headers: { 'content-type': 'application/json' } }
+          )
+        },
+      }
+    )
+    assert.equal(exitCode, 0)
+  })
+
+  const parsed = JSON.parse(out.read())
+  assert.equal(calls, 1)
+  assert.equal(parsed.meta.publication.complete, false)
+  assert.deepEqual(parsed.meta.publication.pending_post_ids, [])
+  assert.deepEqual(parsed.meta.publication.action_required_post_ids, ['send_1'])
+})
+
+test('posts wait quiet reports attention for action-required work', async () => {
+  const out = output()
+  await withApiKey(async () => {
+    const exitCode = await run(
+      ['posts', 'wait', 'send_1', '--workspace', 'ws_1', '--quiet'],
+      { stdin: process.stdin, stdout: out.stream, stderr: output().stream },
+      {
+        fetchImpl: async () =>
+          new Response(
+            JSON.stringify({
+              id: 'send_1',
+              state: 'needs-attention',
+              terminal: false,
+              action_required: true,
+            }),
+            { headers: { 'content-type': 'application/json' } }
+          ),
+      }
+    )
+    assert.equal(exitCode, 0)
+  })
+
+  assert.equal(out.read(), 'attention\n')
+})
+
+test('posts publish can wait for provider completion through the Post command', async () => {
+  const out = output()
+  const calls = []
+  await withApiKey(async () => {
+    const exitCode = await run(
+      [
+        'posts',
+        'publish',
+        '--workspace',
+        'ws_1',
+        '--post',
+        'send_1',
+        '--post-version',
+        '1',
+        '--destination',
+        'dest_1',
+        '--yes',
+        '--wait',
+        '--json',
+      ],
+      {
+        stdin: process.stdin,
+        stdout: out.stream,
+        stderr: output().stream,
+      },
+      {
+        sleep: async () => {},
+        fetchImpl: async (url, init) => {
+          calls.push({ url: String(url), method: init.method })
+          if (init.method === 'POST')
+            return new Response(
+              JSON.stringify({
+                object: 'post_set',
+                group: 'launch',
+                posts: [{ id: 'send_1', state: 'ready', terminal: false }],
+              }),
+              {
+                status: 202,
+                headers: {
+                  'content-type': 'application/json',
+                  'retry-after': '1',
+                },
+              }
+            )
+          return new Response(
+            JSON.stringify({
+              id: 'send_1',
+              state: 'published',
+              terminal: true,
+              receipts: [{ id: 'rcpt_1', state: 'published' }],
+            }),
+            { headers: { 'content-type': 'application/json' } }
+          )
+        },
+      }
+    )
+    assert.equal(exitCode, 0)
+  })
+
+  const parsed = JSON.parse(out.read())
+  assert.equal(parsed.meta.waited, true)
+  assert.equal(parsed.meta.wait_complete, true)
+  assert.equal(parsed.meta.publication.complete, true)
+  assert.equal(parsed.data.posts[0].receipts[0].id, 'rcpt_1')
+  assert.equal(calls.length, 2)
+})
+
+test('posts publish rejects a wait for scheduled work before any request', async () => {
+  let called = false
+  const err = output()
+  await withApiKey(async () => {
+    const exitCode = await run(
+      [
+        'posts',
+        'publish',
+        '--workspace',
+        'ws_1',
+        '--post',
+        'send_1',
+        '--post-version',
+        '1',
+        '--destination',
+        'dest_1',
+        '--at',
+        '2026-08-25T09:00:00Z',
+        '--yes',
+        '--wait',
+      ],
+      { stdin: process.stdin, stdout: output().stream, stderr: err.stream },
+      {
+        fetchImpl: async () => {
+          called = true
+          return new Response()
+        },
+      }
+    )
+    assert.equal(exitCode, 2)
+  })
+  assert.equal(called, false)
+  assert.match(err.read(), /only for immediate publication/)
+})
+
+test('posts publish wait stops when a Post requires action', async () => {
+  const out = output()
+  let calls = 0
+  await withApiKey(async () => {
+    const exitCode = await run(
+      [
+        'posts',
+        'publish',
+        '--workspace',
+        'ws_1',
+        '--post',
+        'send_1',
+        '--post-version',
+        '1',
+        '--destination',
+        'dest_1',
+        '--yes',
+        '--wait',
+        '--json',
+      ],
+      {
+        stdin: process.stdin,
+        stdout: out.stream,
+        stderr: output().stream,
+      },
+      {
+        sleep: async () => {},
+        fetchImpl: async () => {
+          calls += 1
+          return new Response(
+            JSON.stringify({
+              object: 'post_set',
+              posts: [
+                {
+                  id: 'send_1',
+                  state: 'processing',
+                  terminal: false,
+                  action_required: true,
+                  available_actions: ['retry'],
+                },
+              ],
+            }),
+            {
+              status: 202,
+              headers: { 'content-type': 'application/json' },
+            }
+          )
+        },
+      }
+    )
+    assert.equal(exitCode, 0)
+  })
+
+  const parsed = JSON.parse(out.read())
+  assert.equal(parsed.meta.wait_complete, true)
+  assert.equal(parsed.meta.publication.complete, false)
+  assert.deepEqual(parsed.meta.publication.action_required_post_ids, ['send_1'])
+  assert.equal(parsed.data.posts[0].action_required, true)
+  assert.equal(calls, 1)
+})
+
+test('doctor reports compatibility, safe credential metadata, and ready Destinations', async () => {
+  const out = output()
+  const contract = doctorContract()
+  const destinations = [
+    {
+      id: 'dest_1',
+      channel: 'x',
+      status: 'ready',
+      display_name: '@openpmm',
+    },
+  ]
+  await withApiKey(async () => {
+    const exitCode = await run(
+      ['doctor', '--workspace', 'ws_1', '--json'],
+      {
+        stdin: process.stdin,
+        stdout: out.stream,
+        stderr: output().stream,
+      },
+      {
+        fetchImpl: doctorFetch(contract, destinations),
+      }
+    )
+    assert.equal(exitCode, 0)
+  })
+
+  const parsed = JSON.parse(out.read())
+  assert.equal(parsed.data.status, 'ready')
+  assert.equal(parsed.data.api.compatible, true)
+  assert.equal(parsed.data.authentication.source, 'environment')
+  assert.equal(parsed.data.authentication.account_name, 'Demo Account')
+  assert.equal(parsed.data.authentication.credential_name, 'CLI agent')
+  assert.deepEqual(parsed.data.authentication.scopes, [
+    'posts:read',
+    'posts:write',
+  ])
+  assert.equal(parsed.data.credential_store.permissions, 'not_applicable')
+  assert.equal(parsed.data.workspace.selected.id, 'ws_1')
+  assert.equal(parsed.data.destinations.ready[0].id, 'dest_1')
+})
+
+test('doctor reports attention and diagnostics for a contract mismatch', async () => {
+  const out = output()
+  const contract = doctorContract()
+  const operation = OPERATIONS[0]
+  contract.paths[operation.path][operation.method.toLowerCase()].operationId =
+    'renamedOperation'
+
+  await withApiKey(async () => {
+    const exitCode = await run(
+      ['doctor', '--workspace', 'ws_1', '--json'],
+      { stdin: process.stdin, stdout: out.stream, stderr: output().stream },
+      {
+        fetchImpl: doctorFetch(contract, [
+          { id: 'dest_1', channel: 'x', status: 'ready' },
+        ]),
+      }
+    )
+    assert.equal(exitCode, 0)
+  })
+
+  const parsed = JSON.parse(out.read())
+  assert.equal(parsed.data.status, 'attention')
+  assert.equal(parsed.data.api.compatible, false)
+  assert.deepEqual(parsed.data.api.mismatched_operation_ids, [
+    {
+      route: `${operation.method} ${operation.path}`,
+      expected: 'renamedOperation',
+      actual: operation.id,
+    },
+  ])
+})
+
+test('doctor reports attention when the Workspace has no ready Destination', async () => {
+  const out = output()
+  await withApiKey(async () => {
+    const exitCode = await run(
+      ['doctor', '--workspace', 'ws_1', '--json'],
+      { stdin: process.stdin, stdout: out.stream, stderr: output().stream },
+      {
+        fetchImpl: doctorFetch(doctorContract(), [
+          {
+            id: 'dest_1',
+            channel: 'x',
+            status: 'reauthorization-required',
+          },
+        ]),
+      }
+    )
+    assert.equal(exitCode, 0)
+  })
+
+  const parsed = JSON.parse(out.read())
+  assert.equal(parsed.data.status, 'attention')
+  assert.equal(parsed.data.api.compatible, true)
+  assert.equal(parsed.data.destinations.ready_count, 0)
+  assert.deepEqual(parsed.data.destinations.ready, [])
+})
+
+test('doctor rejects extra positional arguments before any request', async () => {
+  const err = output()
+  let called = false
+  await withApiKey(async () => {
+    const exitCode = await run(
+      ['doctor', 'typo', '--workspace', 'ws_1'],
+      { stdin: process.stdin, stdout: output().stream, stderr: err.stream },
+      {
+        fetchImpl: async () => {
+          called = true
+          return new Response()
+        },
+      }
+    )
+    assert.equal(exitCode, 2)
+  })
+
+  assert.equal(called, false)
+  assert.match(err.read(), /Unknown command: doctor typo/)
 })
 
 test('human destination and Post lists show actionable state', async () => {
@@ -1463,6 +1912,7 @@ test('posts create composes the public draft operation', async () => {
   assert.equal(request.body.when, 'draft')
   assert.equal(request.body.group, 'launch')
   assert.equal(request.body.posts[0].channel, 'x')
+  assert.equal(JSON.parse(out.read()).meta.publication, undefined)
 })
 
 test('posts create rejects --destination on a draft before any request', async () => {
@@ -1528,7 +1978,7 @@ test('posts create rejects a repeated --channel and names the values', async () 
   assert.match(err.read(), /received: mastodon, threads/)
 })
 
-test('posts update rejects --destination instead of sending an unknown key', async () => {
+test('posts update rejects a flag from another command before any request', async () => {
   let called = false
   const err = output()
   await withApiKey(async () => {
@@ -1555,7 +2005,7 @@ test('posts update rejects --destination instead of sending an unknown key', asy
     assert.equal(exitCode, 2)
   })
   assert.equal(called, false)
-  assert.match(err.read(), /A post keeps no destination to update/)
+  assert.match(err.read(), /--destination is not available for `openpmm posts update`/)
 })
 
 test('assets list renders a human table, not bare IDs', async () => {
