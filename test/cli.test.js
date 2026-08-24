@@ -814,7 +814,7 @@ test('feedback submission sends a message through the public API', async () => {
     message: 'The scheduled Posts view did not refresh.',
   })
   assert.equal(request.init.headers['Idempotency-Key'], 'feedback-request')
-  assert.match(request.init.headers['User-Agent'], /^@openpmm\/cli\/0\.2\.0 /)
+  assert.match(request.init.headers['User-Agent'], /^@openpmm\/cli\/0\.3\.0 /)
   assert.match(stdout.read(), /"feedback"/)
 })
 
