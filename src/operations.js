@@ -14,6 +14,8 @@ export const OPERATIONS = [
   op('listWorkspaces', 'workspaces list', 'GET', '/workspaces', { paginated: true }),
   op('getWorkspace', 'workspaces show', 'GET', '/workspaces/{workspace_id}'),
   op('patchWorkspace', 'workspaces update', 'PATCH', '/workspaces/{workspace_id}', { body: true, ifMatch: 'workspace' }),
+  op('getWritingRefinementSettings', 'writing-assistant settings show', 'GET', '/workspaces/{workspace_id}/writing-refinement-settings'),
+  op('putWritingRefinementSettings', 'writing-assistant settings update', 'PUT', '/workspaces/{workspace_id}/writing-refinement-settings', { body: true, ifMatch: 'writing-refinement-settings' }),
   op('cancelWorkspaceSubscription', 'workspaces cancel-subscription', 'POST', '/workspaces/{workspace_id}/cancellation', { body: true, ifMatch: 'workspace', idempotent: true, confirm: true }),
   op('submitFeedback', 'feedback submit', 'POST', '/workspaces/{workspace_id}/feedback', { body: true, idempotent: true }),
   op('listAccountMembers', 'team members list', 'GET', '/account/members'),
