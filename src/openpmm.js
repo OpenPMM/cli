@@ -220,6 +220,7 @@ export async function run(
             request_id: result.requestId,
             idempotency_key: null,
             operation_id: match.operation.id,
+            ...httpResponseMetadata(result),
           },
         },
         parsed.flags,
@@ -244,6 +245,7 @@ export async function run(
         request_id: result.requestId,
         idempotency_key: idempotencyKey,
         operation_id: match.operation.id,
+        ...httpResponseMetadata(result),
         ...(waited ? { waited: true } : {}),
       },
     }
@@ -1421,6 +1423,14 @@ function renderSuccess(output, flags, io) {
   if (output.meta?.operation_id === 'getPost')
     return renderPostDetail(output.data, io.stdout)
   write(io.stdout, `${JSON.stringify(output.data, null, 2)}\n`)
+}
+
+function httpResponseMetadata(response) {
+  return {
+    http_status: response.status,
+    retry_after: response.headers.get('retry-after'),
+    location: response.headers.get('location'),
+  }
 }
 
 function jsonSuccessOutput(output) {

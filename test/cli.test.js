@@ -3,6 +3,7 @@ import { createHmac } from 'node:crypto'
 import { mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { Readable } from 'node:stream'
 import { test } from 'node:test'
 import { OPERATIONS } from '../src/operations.js'
 import { run } from '../src/openpmm.js'
@@ -1151,7 +1152,63 @@ test('JSON output stays on stdout and diagnostics stay on stderr', async () => {
     assert.equal(parsed.has_more, false)
     assert.equal(parsed.next_cursor, null)
     assert.equal(parsed.meta.request_id, 'req_1')
+    assert.equal(parsed.meta.http_status, 200)
+    assert.equal(parsed.meta.retry_after, null)
+    assert.equal(parsed.meta.location, null)
   })
+})
+
+test('JSON output preserves asynchronous HTTP acceptance metadata', async () => {
+  const out = output()
+  await withApiKey(async () => {
+    const exitCode = await run(
+      [
+        'posts',
+        'create',
+        '--workspace',
+        'ws_1',
+        '--file',
+        '-',
+        '--yes',
+        '--json',
+      ],
+      {
+        stdin: Readable.from([
+          JSON.stringify({
+            confirmed: true,
+            when: 'now',
+            posts: [{ destination_id: 'dest_1', body: ['Video post'] }],
+          }),
+        ]),
+        stdout: out.stream,
+        stderr: output().stream,
+      },
+      {
+        fetchImpl: async () =>
+          new Response(
+            JSON.stringify({
+              object: 'post_set',
+              group: null,
+              posts: [{ id: 'send_1', state: 'preparing' }],
+            }),
+            {
+              status: 202,
+              headers: {
+                'content-type': 'application/json',
+                location: '/v1/workspaces/ws_1/posts/send_1',
+                'retry-after': '5',
+              },
+            }
+          ),
+      }
+    )
+    assert.equal(exitCode, 0)
+  })
+
+  const parsed = JSON.parse(out.read())
+  assert.equal(parsed.meta.http_status, 202)
+  assert.equal(parsed.meta.retry_after, '5')
+  assert.equal(parsed.meta.location, '/v1/workspaces/ws_1/posts/send_1')
 })
 
 test('human destination and Post lists show actionable state', async () => {
