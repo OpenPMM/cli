@@ -10,6 +10,9 @@
   to another command before a request.
 - Documented the CLI credential boundary, deterministic agent workflow,
   publication acceptance contract, and global-install `PATH` diagnostics.
+- Removed the `writing-assistant settings show` and
+  `writing-assistant settings update` commands after the public API dropped the
+  `writing-refinement-settings` endpoints.
 
 ## 0.3.0 - 2026-08-24
 
