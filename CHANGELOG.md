@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.4.0 - 2026-08-24
+
+- Added `openpmm doctor` for read-only compatibility, authentication, scope,
+  Workspace, Destination, and credential permission checks.
+- Added bounded `posts publish --wait`, immediate `posts create --wait`, and
+  `posts wait` status handling through the CLI.
+- Added complete command-specific flag tables and rejected flags that belong
+  to another command before a request.
+- Documented the CLI credential boundary, deterministic agent workflow,
+  publication acceptance contract, and global-install `PATH` diagnostics.
+
 ## 0.3.0 - 2026-08-24
 
 - Restored the `writing-assistant settings show` and
