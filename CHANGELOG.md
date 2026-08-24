@@ -2,6 +2,9 @@
 
 ## 0.3.0 - 2026-08-24
 
+- Restored the `writing-assistant settings show` and
+  `writing-assistant settings update` commands, which a merge in #32 had
+  accidentally reverted after #31 added them.
 - Upgraded CI GitHub Actions: `actions/checkout` 6 → 7.0.1 and
   `actions/setup-node` 5 → 7.0.0 (both migrated to the Node 24 runtime).
 

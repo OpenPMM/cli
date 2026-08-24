@@ -1572,6 +1572,8 @@ function helpFor(command) {
         ? ' Use --post, --expected-scheduled-at, and --local-date for one Post. Use --file for an atomic multi-Post move.'
       : operation.id === 'patchDestination'
         ? ' Use --queue-policy <json> or provide a complete JSON request body.'
+      : operation.id === 'putWritingRefinementSettings'
+        ? ' Provide a complete JSON request body with an actions object for all seven refinement options. Each action requires title, prompt, and icon.'
       : operation.id === 'listPosts'
         ? ' Use --view, --state, --channel, --group, --destination, --created-after, or --scheduled-before to filter Posts. Use --include attempts for attempt diagnostics.'
       : operation.id === 'retryPost'
