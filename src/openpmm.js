@@ -19,7 +19,7 @@ import {
   normalizeApiBaseUrl,
 } from './transport.js'
 
-export const VERSION = '0.2.0'
+export const VERSION = '0.3.0'
 const DEFAULT_API_BASE_URL = 'https://api.openpmm.com/v1'
 const ASSET_UPLOAD_PART_SIZE = 8 * 1024 * 1024
 const CONFIG_HOME =

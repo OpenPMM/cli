@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.0 - 2026-08-24
+
+- Upgraded CI GitHub Actions: `actions/checkout` 6 → 7.0.1 and
+  `actions/setup-node` 5 → 7.0.0 (both migrated to the Node 24 runtime).
+
 ## 0.2.0 - 2026-08-20
 
 - Added browser-authorized login and agent-safe signup handoff.
