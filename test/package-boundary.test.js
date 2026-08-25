@@ -3,6 +3,7 @@ import { execFile } from 'node:child_process'
 import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { createServer } from 'node:http'
 import { test } from 'node:test'
 import { promisify } from 'node:util'
 
@@ -59,10 +60,64 @@ test('the packed CLI runs through its installed executable', async () => {
       process.platform === 'win32'
         ? join(prefix, 'openpmm.cmd')
         : join(prefix, 'bin', 'openpmm')
-    const result = await execFileAsync(executable, ['--version'])
+    const version = await execFileAsync(executable, ['--version'])
 
-    assert.equal(result.stdout, `${packageJson.version}\n`)
-    assert.equal(result.stderr, '')
+    assert.equal(version.stdout, `${packageJson.version}\n`)
+    assert.equal(version.stderr, '')
+
+    const server = createServer((_request, response) => {
+      response.writeHead(200, { 'content-type': 'application/json' })
+      response.end(
+        JSON.stringify({
+          id: 'dest_x',
+          object: 'destination',
+          channel: 'x',
+          display_name: '@openpmm',
+          status: 'ready',
+          is_default: true,
+          capabilities: {
+            max_body_items: 25,
+            body_text_limit: {
+              maximum: 25_000,
+              unit: 'weighted_characters',
+            },
+          },
+        })
+      )
+    })
+    await new Promise((resolve, reject) => {
+      server.once('error', reject)
+      server.listen(0, '127.0.0.1', resolve)
+    })
+    try {
+      const address = server.address()
+      if (!address || typeof address === 'string')
+        throw new Error('The package-boundary server did not expose a port.')
+      const destination = await execFileAsync(
+        executable,
+        [
+          'destinations',
+          'show',
+          'dest_x',
+          '--workspace',
+          'ws_1',
+          '--json',
+          '--api-base-url',
+          `http://127.0.0.1:${address.port}/v1`,
+        ],
+        { env: { ...environment, OPENPMM_API_KEY: 'test-key' } }
+      )
+      const parsed = JSON.parse(destination.stdout)
+      assert.deepEqual(parsed.data.capabilities.body_text_limit, {
+        maximum: 25_000,
+        unit: 'weighted_characters',
+      })
+      assert.equal(destination.stderr, '')
+    } finally {
+      await new Promise((resolve, reject) =>
+        server.close((error) => (error ? reject(error) : resolve()))
+      )
+    }
   } finally {
     await rm(directory, { recursive: true, force: true })
   }
