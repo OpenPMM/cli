@@ -281,7 +281,8 @@ test('billing help explains the trial and payment confirmation', async () => {
   assert.match(subscribe.read(), /Use --interval month or --interval year/)
   assert.match(subscribe.read(), /Signup starts the 14-day trial automatically/)
   assert.match(subscribe.read(), /beta offer without a promotion code/)
-  assert.match(subscribe.read(), /Annual costs \$75\.62 for the first year/)
+  assert.match(subscribe.read(), /Monthly costs \$1\.99 for the first paid month/)
+  assert.match(subscribe.read(), /Annual costs \$91\.54 for the first year/)
   assert.match(subscribe.read(), /start paid service immediately and unlock X/)
   assert.match(subscribe.read(), /Requires --yes/)
 
