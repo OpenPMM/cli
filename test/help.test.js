@@ -80,7 +80,14 @@ test('direct post creation help exposes the conditional confirmation gate', asyn
     help,
     /Side effects: Requires --yes unless the request creates a draft\./
   )
-  assert.match(help, /--file request\.json --yes --json/)
+  assert.match(
+    help,
+    /posts create --when draft --channel x --body "Draft copy" --json/
+  )
+  assert.match(
+    help,
+    /posts create --destination dest_01JABCDEF --body "Publish copy" --yes --json/
+  )
   assert.match(help, /Use --when queue/)
   for (const flag of [
     '--when <draft|now|queue|timestamp>',

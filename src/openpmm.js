@@ -26,7 +26,7 @@ import {
   normalizeApiBaseUrl,
 } from './transport.js'
 
-export const VERSION = '0.4.0'
+export const VERSION = '0.4.1'
 const DEFAULT_API_BASE_URL = 'https://api.openpmm.com/v1'
 const ASSET_UPLOAD_PART_SIZE = 8 * 1024 * 1024
 const CONFIG_HOME =
@@ -1010,16 +1010,16 @@ async function runDoctor(
     coverage.duplicateCliOperations.length === 0 &&
     coverage.mismatchedOperationIds.length === 0 &&
     coverage.mismatchedCommands.length === 0
-  const status =
-    compatible && selectedWorkspace && readyDestinations.length > 0
-      ? 'ready'
-      : 'attention'
+  const draftReady = Boolean(compatible && selectedWorkspace)
+  const publishReady = draftReady && readyDestinations.length > 0
+  const status = draftReady ? 'ready' : 'attention'
   const authentication = accountResult.data?.authentication ?? {}
   const data = {
     object: 'cli_doctor',
     status,
     cli_version: VERSION,
     api: {
+      status: compatible ? 'ready' : 'attention',
       base_url: baseUrl,
       contract_version: contract.info?.version ?? null,
       compatible,
@@ -1030,6 +1030,7 @@ async function runDoctor(
       mismatched_commands: coverage.mismatchedCommands,
     },
     authentication: {
+      status: 'ready',
       source: credentialSource,
       account_id: accountResult.data?.id ?? null,
       account_name: accountResult.data?.name ?? null,
@@ -1042,6 +1043,7 @@ async function runDoctor(
       expires_at: authentication.expires_at ?? null,
     },
     credential_store: {
+      status: 'ready',
       managed_by_cli: credentialSource === 'store',
       path: credentialSource === 'store' ? credentialPath : null,
       permissions:
@@ -1052,6 +1054,7 @@ async function runDoctor(
           : 'not_applicable',
     },
     workspace: {
+      status: selectedWorkspace ? 'ready' : 'attention',
       selection_source: selectionSource,
       selected: selectedWorkspace
         ? {
@@ -1063,8 +1066,13 @@ async function runDoctor(
       available_count: workspaces.length,
     },
     destinations: {
+      status: readyDestinations.length > 0 ? 'ready' : 'attention',
       ready_count: readyDestinations.length,
       ready: readyDestinations,
+    },
+    workflows: {
+      draft: { ready: draftReady },
+      publish: { ready: publishReady },
     },
   }
   if (parsed.flags.quiet) return write(io.stdout, `${status}\n`)
@@ -1940,6 +1948,7 @@ function renderError(error, flags, io) {
     retry_at: error.retryAt,
     details: error.details,
     idempotency_key: error.idempotencyKey ?? null,
+    recovery: error.recovery,
   }
   if (flags.json) write(io.stderr, `${JSON.stringify(payload)}\n`)
   else {
@@ -1947,6 +1956,10 @@ function renderError(error, flags, io) {
     if (error.requestId) write(io.stderr, `Request ID: ${error.requestId}\n`)
     if (error.reason) write(io.stderr, `Reason: ${error.reason}\n`)
     if (error.retryAt) write(io.stderr, `Retry at: ${error.retryAt}\n`)
+    if (error.recovery?.start_command)
+      write(io.stderr, `Next: ${error.recovery.start_command}\n`)
+    if (error.recovery?.resume_command)
+      write(io.stderr, `Then: ${error.recovery.resume_command}\n`)
     if (error.idempotencyKey)
       write(
         io.stderr,
@@ -2040,8 +2053,12 @@ function helpFor(command) {
         ? ' Use --post <id>. Refresh returns after OpenPMM accepts or coalesces the request. Add --wait to poll for a bounded time.'
       : ['getPostGroupAnalytics', 'refreshPostGroupAnalytics'].includes(operation.id)
         ? ' Use --group <group>. Refresh returns per-Post outcomes. Add --wait to poll for a bounded time.'
-      : ''
-  return `${command}\n\nUsage:\n  openpmm ${command}${positional ? ` ${positional}` : ''} [flags]\n\n${operationTitle(operation)} through the public API.\nCalls ${operation.method} ${operation.path}.\nRequired scope: ${scopeFor(operation)}\nWorkspace: ${operation.path.includes('{workspace_id}') ? 'required' : 'not required'}\nSide effects: ${sideEffects}\nInput: flags or --file <request.json>; use --file - for stdin.${inputNote}\nOutput: human by default. Use the output flags below for automation.\nRelevant exits: 0 success, 1 error, 2 input, 3 auth, 4 scope, 5 not found, 6 conflict, 7 validation, 8 unavailable, 9 ambiguous, 10 confirmation.\n\nFlags:\n${formatFlagHelp(flagsForOperation(operation))}\n\nExample:\n  openpmm ${command}${positional ? ` ${positional}` : ''}${operation.path.includes('{workspace_id}') ? ' --workspace ws_01JABCDEF' : ''}${operation.body ? ' --file request.json' : ''}${confirmation ? ' --yes' : ''} --json\n`
+        : ''
+  const examples =
+    operation.id === 'createPosts'
+      ? 'Examples:\n  openpmm posts create --when draft --channel x --body "Draft copy" --json\n  openpmm posts create --destination dest_01JABCDEF --body "Publish copy" --yes --json'
+      : `Example:\n  openpmm ${command}${positional ? ` ${positional}` : ''}${operation.path.includes('{workspace_id}') ? ' --workspace ws_01JABCDEF' : ''}${operation.body ? ' --file request.json' : ''}${confirmation ? ' --yes' : ''} --json`
+  return `${command}\n\nUsage:\n  openpmm ${command}${positional ? ` ${positional}` : ''} [flags]\n\n${operationTitle(operation)} through the public API.\nCalls ${operation.method} ${operation.path}.\nRequired scope: ${scopeFor(operation)}\nWorkspace: ${operation.path.includes('{workspace_id}') ? 'required' : 'not required'}\nSide effects: ${sideEffects}\nInput: flags or --file <request.json>; use --file - for stdin.${inputNote}\nOutput: human by default. Use the output flags below for automation.\nRelevant exits: 0 success, 1 error, 2 input, 3 auth, 4 scope, 5 not found, 6 conflict, 7 validation, 8 unavailable, 9 ambiguous, 10 confirmation.\n\nFlags:\n${formatFlagHelp(flagsForOperation(operation))}\n\n${examples}\n`
 }
 
 function requiresConfirmation(operation) {
