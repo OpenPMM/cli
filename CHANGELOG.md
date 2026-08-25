@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+## 0.4.1 - 2026-08-25
+
+- Added structured browser-login recovery commands and removed the fake HTTP
+  status from local errors.
+- Split `doctor` readiness into draft and publication workflows.
+- Added separate draft and publication examples to `posts create --help`.
+- Added media-only thread item support for X, Bluesky, Mastodon, and Threads.
+
 ## 0.4.0 - 2026-08-24
 
 - Added `openpmm doctor` for read-only compatibility, authentication, scope,

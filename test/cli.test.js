@@ -96,6 +96,26 @@ test('reported version matches the package version', async () => {
   assert.equal(stdout.read(), `${packageJson.version}\n`)
 })
 
+test('local authentication errors have no HTTP status and exact recovery commands', () => {
+  assert.throws(
+    () =>
+      new PublicApiTransport({
+        apiKey: null,
+        baseUrl: 'https://api.openpmm.com/v1',
+      }),
+    (error) => {
+      assert.equal(error.status, null)
+      assert.deepEqual(error.recovery, {
+        kind: 'browser_authorization',
+        start_command: 'openpmm auth login --no-wait --json',
+        resume_command: 'openpmm auth login --resume --json',
+        environment_alternative: 'Set OPENPMM_API_KEY.',
+      })
+      return true
+    }
+  )
+})
+
 test('auth logout reports whether the selected environment had a saved login', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'openpmm-cli-logout-'))
   const credentialPath = join(directory, 'credentials.json')
@@ -1579,6 +1599,8 @@ test('doctor reports compatibility, safe credential metadata, and ready Destinat
   assert.equal(parsed.data.credential_store.permissions, 'not_applicable')
   assert.equal(parsed.data.workspace.selected.id, 'ws_1')
   assert.equal(parsed.data.destinations.ready[0].id, 'dest_1')
+  assert.equal(parsed.data.workflows.draft.ready, true)
+  assert.equal(parsed.data.workflows.publish.ready, true)
 })
 
 test('doctor reports attention and diagnostics for a contract mismatch', async () => {
@@ -1613,7 +1635,7 @@ test('doctor reports attention and diagnostics for a contract mismatch', async (
   ])
 })
 
-test('doctor reports attention when the Workspace has no ready Destination', async () => {
+test('doctor keeps draft readiness separate from Destination readiness', async () => {
   const out = output()
   await withApiKey(async () => {
     const exitCode = await run(
@@ -1633,10 +1655,13 @@ test('doctor reports attention when the Workspace has no ready Destination', asy
   })
 
   const parsed = JSON.parse(out.read())
-  assert.equal(parsed.data.status, 'attention')
+  assert.equal(parsed.data.status, 'ready')
   assert.equal(parsed.data.api.compatible, true)
   assert.equal(parsed.data.destinations.ready_count, 0)
   assert.deepEqual(parsed.data.destinations.ready, [])
+  assert.equal(parsed.data.destinations.status, 'attention')
+  assert.equal(parsed.data.workflows.draft.ready, true)
+  assert.equal(parsed.data.workflows.publish.ready, false)
 })
 
 test('doctor rejects extra positional arguments before any request', async () => {
@@ -2098,7 +2123,7 @@ test('posts create queue uses the Workspace timezone', async () => {
   assert.ok(!Object.hasOwn(body, 'time_zone'))
 })
 
-test('posts create assigns media to a specific thread item', async () => {
+test('posts create preserves a media-only thread item', async () => {
   let body
   await withApiKey(async () => {
     const exitCode = await run(
@@ -2112,7 +2137,7 @@ test('posts create assigns media to a specific thread item', async () => {
         '--body',
         'Opening',
         '--body',
-        'Reply',
+        '',
         '--media-item',
         '1:ast_reply',
         '--yes',
@@ -2141,6 +2166,7 @@ test('posts create assigns media to a specific thread item', async () => {
   assert.deepEqual(body.posts[0].media_items, [
     { asset_id: 'ast_reply', item_index: 1 },
   ])
+  assert.deepEqual(body.posts[0].body, ['Opening', ''])
   assert.equal('media' in body.posts[0], false)
 })
 

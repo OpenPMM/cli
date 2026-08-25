@@ -4,12 +4,13 @@ export class CliError extends Error {
   constructor(message, options = {}) {
     super(message)
     this.code = options.code ?? 'cli_error'
-    this.status = options.status ?? 0
+    this.status = options.status ?? null
     this.requestId = options.requestId ?? null
     this.retryable = options.retryable ?? false
     this.reason = options.reason ?? null
     this.retryAt = options.retryAt ?? null
     this.details = options.details ?? []
+    this.recovery = options.recovery ?? null
     this.exitCode = options.exitCode ?? exitCodeFor(this.status, this.code)
   }
 }
@@ -52,8 +53,16 @@ export class PublicApiTransport {
   }) {
     if (!apiKey && !anonymous)
       throw new CliError(
-        'No API key is configured. Run `openpmm auth login` or set OPENPMM_API_KEY.',
-        { exitCode: 3 }
+        'No API key is configured. Start browser authorization, then resume it after approval.',
+        {
+          exitCode: 3,
+          recovery: {
+            kind: 'browser_authorization',
+            start_command: 'openpmm auth login --no-wait --json',
+            resume_command: 'openpmm auth login --resume --json',
+            environment_alternative: 'Set OPENPMM_API_KEY.',
+          },
+        }
       )
     this.apiKey = apiKey
     this.anonymous = anonymous

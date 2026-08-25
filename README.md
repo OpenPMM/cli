@@ -37,7 +37,7 @@ Node.js 22 or newer is required.
 For deterministic automation, pin the package version:
 
 ```bash
-npx -y @openpmm/cli@0.4.0 doctor --json
+npx -y @openpmm/cli@0.4.1 doctor --json
 ```
 
 If a global install succeeds but `openpmm` is not found, inspect the npm
@@ -129,14 +129,16 @@ accepts `--workspace <id>` or `OPENPMM_WORKSPACE`; use an explicit value when a
 script works with more than one Workspace.
 
 Repeat `--body` to publish an ordered self-reply chain on X, Bluesky, Mastodon,
-or Threads. Media attaches to the opening post:
+or Threads. A body item on those four channels can contain media without text.
+Use `--media-item <body-index>:<asset-id>` to address any thread position:
 
 ```bash
 openpmm posts create \
   --destination dest_... \
   --body 'Opening post' \
-  --body 'First reply' \
+  --body '' \
   --body 'Second reply' \
+  --media-item 1:ast_... \
   --yes
 ```
 
