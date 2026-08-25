@@ -1737,6 +1737,52 @@ test('human destination and Post lists show actionable state', async () => {
   )
 })
 
+test('destinations show preserves provider capability details in JSON', async () => {
+  const stdout = output()
+  let requestedUrl
+  await withApiKey(async () => {
+    const exitCode = await run(
+      ['destinations', 'show', 'dest_x', '--workspace', 'ws_1', '--json'],
+      {
+        stdin: process.stdin,
+        stdout: stdout.stream,
+        stderr: output().stream,
+      },
+      {
+        fetchImpl: async (url) => {
+          requestedUrl = String(url)
+          return new Response(
+            JSON.stringify({
+              id: 'dest_x',
+              object: 'destination',
+              channel: 'x',
+              display_name: '@openpmm',
+              status: 'ready',
+              is_default: true,
+              capabilities: {
+                max_body_items: 25,
+                body_text_limit: {
+                  maximum: 25_000,
+                  unit: 'weighted_characters',
+                },
+              },
+            }),
+            { headers: { 'content-type': 'application/json' } }
+          )
+        },
+      }
+    )
+    assert.equal(exitCode, 0)
+  })
+
+  assert.match(requestedUrl, /\/workspaces\/ws_1\/destinations\/dest_x$/)
+  const parsed = JSON.parse(stdout.read())
+  assert.deepEqual(parsed.data.capabilities.body_text_limit, {
+    maximum: 25_000,
+    unit: 'weighted_characters',
+  })
+})
+
 test('posts create composes the public draft operation', async () => {
   let request
   const out = output()
