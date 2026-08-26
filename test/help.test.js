@@ -89,6 +89,10 @@ test('direct post creation help exposes the conditional confirmation gate', asyn
     /posts create --destination dest_01JABCDEF --body "Publish copy" --yes --json/
   )
   assert.match(help, /Use --when queue/)
+  assert.match(
+    help,
+    /A Facebook Post with one video uses the Reel placement automatically\./
+  )
   for (const flag of [
     '--when <draft|now|queue|timestamp>',
     '--group <value>',
