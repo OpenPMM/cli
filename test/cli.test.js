@@ -2170,6 +2170,54 @@ test('posts create preserves a media-only thread item', async () => {
   assert.equal('media' in body.posts[0], false)
 })
 
+test('posts create lets the API derive a Facebook Reel from video media', async () => {
+  let body
+  await withApiKey(async () => {
+    const exitCode = await run(
+      [
+        'posts',
+        'create',
+        '--workspace',
+        'ws_1',
+        '--destination',
+        'dst_facebook',
+        '--body',
+        'Facebook video',
+        '--media',
+        'ast_video',
+        '--yes',
+        '--json',
+      ],
+      {
+        stdin: process.stdin,
+        stdout: output().stream,
+        stderr: output().stream,
+      },
+      {
+        fetchImpl: async (_url, init) => {
+          body = JSON.parse(init.body)
+          return new Response(
+            JSON.stringify({ object: 'post_set', posts: [] }),
+            {
+              status: 201,
+              headers: { 'content-type': 'application/json' },
+            }
+          )
+        },
+      }
+    )
+    assert.equal(exitCode, 0)
+  })
+
+  assert.deepEqual(body.posts[0], {
+    destination_id: 'dst_facebook',
+    headline: null,
+    body: ['Facebook video'],
+    media: ['ast_video'],
+    destination_options: null,
+  })
+})
+
 test('posts create forwards one Bluesky video and its publishing options', async () => {
   let body
   await withApiKey(async () => {

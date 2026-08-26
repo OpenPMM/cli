@@ -2024,7 +2024,7 @@ function helpFor(command) {
     operation.id === 'publishPosts'
       ? ' Include every draft Post in the group. Use --at queue to use the next destination queue slot. Exit 0 means OpenPMM accepted the state change. Add --wait for bounded publication status handling. The wait stops when each Post is terminal or needs action. Do not send publish again for a pending Post.'
       : operation.id === 'createPosts'
-        ? ' Use --when queue to use the next destination queue slot. Repeat --body in order to publish a self-reply chain on X, Bluesky, Mastodon, or Threads. Repeat --media-item <body-index>:<asset-id> to attach media to a specific item.'
+        ? ' Use --when queue to use the next destination queue slot. Repeat --body in order to publish a self-reply chain on X, Bluesky, Mastodon, or Threads. Repeat --media-item <body-index>:<asset-id> to attach media to a specific item. A Facebook Post with one video uses the Reel placement automatically.'
       : operation.id === 'patchPost'
         ? ' You can change copy and publishing options on a draft or scheduled Post. Cancel a schedule before you change assets or thread structure.'
       : operation.id === 'movePostsInQueue'
