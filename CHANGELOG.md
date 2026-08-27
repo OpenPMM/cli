@@ -2,9 +2,14 @@
 
 ## Unreleased
 
+## 0.6.0 - 2026-08-27
+
 - Renamed the generic video Asset kind from `reel` to `video`. The retired
   `reel` Asset kind is rejected.
 - Added the unavailable reason to the human-readable Destination list.
+
+## 0.5.0 - 2026-08-27
+
 - Removed `assets validate`. OpenPMM now handles compatible media preparation
   without exposing conversion status or rendition details.
 - Made Facebook placement automatic and rejected the retired
