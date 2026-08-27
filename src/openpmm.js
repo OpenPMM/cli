@@ -1933,6 +1933,35 @@ function renderPostDetail(post, stream) {
   if (post.destination_id) lines.push(`Destination: ${post.destination_id}`)
   if (post.scheduled_at) lines.push(`Scheduled: ${post.scheduled_at}`)
   if (post.published_at) lines.push(`Published: ${post.published_at}`)
+  if (post.last_error) {
+    lines.push(
+      `Last error: [${post.last_error.code ?? 'unknown'}] ${post.last_error.message ?? ''}`
+    )
+    if (post.last_error.user_action)
+      lines.push(`User action: ${post.last_error.user_action}`)
+  }
+  if (Array.isArray(post.attempts) && post.attempts.length > 0) {
+    lines.push('Attempts:')
+    for (const attempt of post.attempts) {
+      lines.push(
+        `  #${attempt.number ?? '?'} ${attempt.status ?? 'unknown'} (${attempt.trigger ?? 'unknown'})`
+      )
+      if (attempt.error)
+        lines.push(
+          `    Error: [${attempt.error.code ?? 'unknown'}] ${attempt.error.message ?? ''}`
+        )
+      const provider = attempt.provider ?? {}
+      const providerDetails = [
+        provider.operation ? `operation=${provider.operation}` : null,
+        provider.status_code ? `status=${provider.status_code}` : null,
+        provider.error_code ? `code=${provider.error_code}` : null,
+        provider.subcode ? `subcode=${provider.subcode}` : null,
+        provider.request_id ? `request_id=${provider.request_id}` : null,
+      ].filter(Boolean)
+      if (providerDetails.length > 0)
+        lines.push(`    Provider: ${providerDetails.join(' ')}`)
+    }
+  }
   if (body) lines.push(`Body:\n  ${body}`)
   write(stream, `${lines.join('\n')}\n`)
 }
@@ -2033,6 +2062,8 @@ function helpFor(command) {
         ? ' Use --queue-policy <json> or provide a complete JSON request body.'
       : operation.id === 'listPosts'
         ? ' Use --view, --state, --channel, --group, --destination, --created-after, or --scheduled-before to filter Posts. Use --include attempts for attempt diagnostics.'
+      : operation.id === 'getPost'
+        ? ' Use --include attempts for provider status, error code, and request ID diagnostics.'
       : operation.id === 'retryPost'
         ? ' A Post with retry_safety may_duplicate also requires --acknowledge-duplicate-risk. Verify the provider before you use this flag.'
       : operation.id === 'validateAsset'

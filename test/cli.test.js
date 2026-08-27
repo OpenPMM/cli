@@ -2648,6 +2648,71 @@ test('posts list renders body text even when it is carried under payload', async
   assert.match(printed, /send_1\tx\tdraft\tLaunch copy/)
 })
 
+test('posts show renders the last error and provider attempt diagnostics', async () => {
+  const stdout = output()
+  await withApiKey(async () => {
+    const exitCode = await run(
+      [
+        'posts',
+        'show',
+        'send_1',
+        '--workspace',
+        'ws_1',
+        '--include',
+        'attempts',
+      ],
+      { stdin: process.stdin, stdout: stdout.stream, stderr: output().stream },
+      {
+        fetchImpl: async () =>
+          new Response(
+            JSON.stringify({
+              id: 'send_1',
+              channel: 'facebook',
+              state: 'failed',
+              last_error: {
+                code: 'facebook-http-400',
+                message: 'There was a problem uploading your video file.',
+                user_action: 'retry',
+              },
+              attempts: [
+                {
+                  number: 1,
+                  status: 'failed',
+                  trigger: 'initial',
+                  error: {
+                    code: 'facebook-http-400',
+                    message: 'There was a problem uploading your video file.',
+                  },
+                  provider: {
+                    operation: 'transfer-reel',
+                    status_code: 400,
+                    error_code: '6000',
+                    subcode: '1363019',
+                    request_id: 'meta-trace-1',
+                  },
+                },
+              ],
+            }),
+            { headers: { 'content-type': 'application/json' } }
+          ),
+      }
+    )
+    assert.equal(exitCode, 0)
+  })
+
+  const printed = stdout.read()
+  assert.match(
+    printed,
+    /Last error: \[facebook-http-400\] There was a problem uploading your video file\./
+  )
+  assert.match(printed, /User action: retry/)
+  assert.match(printed, /#1 failed \(initial\)/)
+  assert.match(
+    printed,
+    /Provider: operation=transfer-reel status=400 code=6000 subcode=1363019 request_id=meta-trace-1/
+  )
+})
+
 test('posts list forwards lifecycle and destination filters', async () => {
   let requestedUrl
   await withApiKey(async () => {
