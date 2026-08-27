@@ -197,7 +197,7 @@ publishing, disconnect, delete, cancel, reschedule, and retry operations require
 
 ```bash
 openpmm assets upload video.mp4 \
-  --kind reel \
+  --kind video \
   --json
 
 openpmm assets download media_reel_... \
@@ -206,6 +206,9 @@ openpmm assets download media_reel_... \
 
 Uploads stream through public API operations. Downloads never overwrite an
 existing file.
+
+`video` is a generic Asset kind. It does not select a YouTube Short, Facebook
+Reel, or Instagram Reel. Set the destination options when you create the Post.
 
 ### Send feedback
 

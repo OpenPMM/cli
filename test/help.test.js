@@ -62,7 +62,7 @@ test('asset workflow help states every required input', async () => {
   const help = stdout.read()
   assert.match(help, /openpmm assets upload <path> \[flags\]/)
   assert.match(help, /--workspace <id>/)
-  assert.match(help, /--kind <card\|reel\|poster>/)
+  assert.match(help, /--kind <card\|video\|poster>/)
   assert.match(help, /--content-type <type>/)
   assert.match(help, /--idempotency-key <key>/)
 })

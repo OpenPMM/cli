@@ -1722,6 +1722,7 @@ test('human destination and Post lists show actionable state', async () => {
                   id: 'dest_x',
                   channel: 'x',
                   status: 'reauthorization-required',
+                  unavailable_reason: 'reauthorization_required',
                   is_default: false,
                   display_name: '@openpmm',
                 },
@@ -1762,9 +1763,9 @@ test('human destination and Post lists show actionable state', async () => {
   })
   assert.equal(
     destinations.read(),
-    'ID\tCHANNEL\tSTATUS\tDEFAULT\tNAME\n' +
-      'dest_threads\tthreads\tready\tyes\t@openpmm\n' +
-      'dest_x\tx\treauthorization-required\tno\t@openpmm\n'
+    'ID\tCHANNEL\tSTATUS\tREASON\tDEFAULT\tNAME\n' +
+      'dest_threads\tthreads\tready\t-\tyes\t@openpmm\n' +
+      'dest_x\tx\treauthorization-required\treauthorization_required\tno\t@openpmm\n'
   )
   assert.equal(
     posts.read(),
@@ -1970,8 +1971,8 @@ test('assets list renders a human table, not bare IDs', async () => {
                 },
                 {
                   id: 'media_reel_1',
-                  type: 'reel',
-                  label: 'Launch reel',
+                  type: 'video',
+                  label: 'Launch video',
                   dimensions: '1080x1920',
                 },
               ],
@@ -1988,7 +1989,7 @@ test('assets list renders a human table, not bare IDs', async () => {
     out.read(),
     'ID\tKIND\tDIMENSIONS\tLABEL\n' +
       'asset_1\tcard\t1200x675\tLaunch artwork\n' +
-      'media_reel_1\treel\t1080x1920\tLaunch reel\n'
+      'media_reel_1\tvideo\t1080x1920\tLaunch video\n'
   )
 })
 
@@ -2581,7 +2582,7 @@ test('--limit bounds auto-pagination and --jsonl emits only items', async () => 
 
 test('assets upload sends checksum-pinned multipart data without the API credential', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'openpmm-cli-'))
-  const filePath = join(directory, 'card.png')
+  const filePath = join(directory, 'video.mp4')
   await writeFile(filePath, Buffer.from('image'))
   const requests = []
   const out = output()
@@ -2637,7 +2638,9 @@ test('assets upload sends checksum-pinned multipart data without the API credent
     requests[1].init.headers['x-amz-checksum-crc64nvme'],
     crc64NvmeBase64(Buffer.from('image'))
   )
-  assert.deepEqual(JSON.parse(requests[0].init.body).parts, [
+  const beginBody = JSON.parse(requests[0].init.body)
+  assert.equal(beginBody.kind, 'video')
+  assert.deepEqual(beginBody.parts, [
     {
       part_number: 1,
       checksum_crc64nvme: crc64NvmeBase64(Buffer.from('image')),
@@ -2655,6 +2658,39 @@ test('assets upload sends checksum-pinned multipart data without the API credent
     ],
   })
   assert.equal(JSON.parse(out.read()).data.id, 'ast_1')
+})
+
+test('assets upload rejects the retired reel kind before any request', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'openpmm-cli-'))
+  const filePath = join(directory, 'video.mp4')
+  await writeFile(filePath, Buffer.from('video'))
+  let called = false
+  const err = output()
+
+  await withApiKey(async () => {
+    const exitCode = await run(
+      [
+        'assets',
+        'upload',
+        filePath,
+        '--workspace',
+        'ws_1',
+        '--kind',
+        'reel',
+      ],
+      { stdin: process.stdin, stdout: output().stream, stderr: err.stream },
+      {
+        fetchImpl: async () => {
+          called = true
+          return new Response('{}')
+        },
+      }
+    )
+    assert.equal(exitCode, 2)
+  })
+
+  assert.equal(called, false)
+  assert.match(err.read(), /--kind must be card, video, or poster/)
 })
 
 test('assets download writes a signed response without overwriting files', async () => {

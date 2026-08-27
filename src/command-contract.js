@@ -53,7 +53,7 @@ const FLAG_DEFINITIONS = {
   interval: ['<month|year>', 'Billing interval.'],
   json: ['', 'Write one stable JSON document to stdout.'],
   jsonl: ['', 'Write one JSON object per list item.'],
-  kind: ['<card|reel|poster>', 'Asset kind.'],
+  kind: ['<card|video|poster>', 'Generic Asset kind.'],
   limit: ['<count>', 'Maximum list items.'],
   'local-date': ['<date>', 'Local calendar date in the Workspace time zone.'],
   media: ['<ids>', 'Comma-separated Asset IDs.'],
