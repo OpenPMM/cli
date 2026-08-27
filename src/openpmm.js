@@ -1157,6 +1157,8 @@ async function uploadAsset(transport, workspace, parsed, io) {
   const fileName = basename(filePath)
   const contentType = parsed.flags['content-type'] ?? contentTypeFor(fileName)
   const kind = parsed.flags.kind ?? kindFor(fileName)
+  if (!['card', 'video', 'poster'].includes(kind))
+    throw new CliError('--kind must be card, video, or poster.', { exitCode: 2 })
   const workflowKey = parsed.flags['idempotency-key'] ?? randomUUID()
   const checksums = await checksumAssetParts(
     filePath,
@@ -1370,7 +1372,7 @@ async function downloadAsset(transport, workspace, parsed, io) {
 
 function kindFor(fileName) {
   return ['.mp4', '.mov', '.webm'].includes(extname(fileName).toLowerCase())
-    ? 'reel'
+    ? 'video'
     : 'card'
 }
 
@@ -1917,11 +1919,11 @@ function jsonSuccessOutput(output) {
 }
 
 function renderDestinationList(values, stream) {
-  write(stream, 'ID\tCHANNEL\tSTATUS\tDEFAULT\tNAME\n')
+  write(stream, 'ID\tCHANNEL\tSTATUS\tREASON\tDEFAULT\tNAME\n')
   for (const value of values) {
     write(
       stream,
-      `${value.id}\t${value.channel ?? 'unknown'}\t${value.status ?? 'unknown'}\t${value.is_default ? 'yes' : 'no'}\t${value.display_name ?? ''}\n`
+      `${value.id}\t${value.channel ?? 'unknown'}\t${value.status ?? 'unknown'}\t${value.unavailable_reason ?? '-'}\t${value.is_default ? 'yes' : 'no'}\t${value.display_name ?? ''}\n`
     )
   }
 }
