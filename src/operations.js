@@ -24,7 +24,6 @@ export const OPERATIONS = [
   op('revokeAccountInvitation', 'team invitations revoke', 'DELETE', '/account/invitations/{invitation_id}', { idempotent: true, confirm: true }),
   op('listAssets', 'assets list', 'GET', '/workspaces/{workspace_id}/assets', { paginated: true }),
   op('getAsset', 'assets show', 'GET', '/workspaces/{workspace_id}/assets/{asset_id}'),
-  op('validateAsset', 'assets validate', 'POST', '/workspaces/{workspace_id}/assets/{asset_id}/validations', { body: true }),
   op('deleteAsset', 'assets delete', 'DELETE', '/workspaces/{workspace_id}/assets/{asset_id}', { idempotent: true, confirm: true }),
   op('beginAssetUpload', 'asset-uploads create', 'POST', '/workspaces/{workspace_id}/asset-uploads', { body: true, idempotent: true }),
   op('getAssetUpload', 'asset-uploads show', 'GET', '/workspaces/{workspace_id}/asset-uploads/{upload_id}'),

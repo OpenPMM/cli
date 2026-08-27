@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Removed `assets validate`. OpenPMM now handles compatible media preparation
+  without exposing conversion status or rendition details.
+- Made Facebook placement automatic and rejected the retired
+  `destination_options.facebook` input before any API request.
+- Added publication `outcome` values and exit code `11` when a Post needs
+  action while preserving structured results and receipts.
+- Marked browser authorization metadata as sensitive.
+
 ## 0.4.1 - 2026-08-25
 
 - Added structured browser-login recovery commands and removed the fake HTTP

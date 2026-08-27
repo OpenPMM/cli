@@ -26,7 +26,7 @@ import {
   normalizeApiBaseUrl,
 } from './transport.js'
 
-export const VERSION = '0.4.1'
+export const VERSION = '0.5.0'
 const DEFAULT_API_BASE_URL = 'https://api.openpmm.com/v1'
 const ASSET_UPLOAD_PART_SIZE = 8 * 1024 * 1024
 const CONFIG_HOME =
@@ -314,6 +314,9 @@ export async function run(
         })
       : null
     const output = {
+      ...(publication
+        ? { outcome: publicationOutcome(data, publication) }
+        : {}),
       data,
       meta: {
         request_id: result.requestId,
@@ -336,7 +339,7 @@ export async function run(
         io.stderr,
         `OpenPMM accepted the publication. Provider work is still active. Run: ${publication.next_command}\n`
       )
-    return 0
+    return publication?.action_required_post_ids.length ? 11 : 0
   } catch (error) {
     const normalized =
       error instanceof CliError
@@ -564,10 +567,6 @@ async function requestBody(operation, parsed, io) {
   set(body, 'asset_ids', csv(flags.media))
   set(body, 'asset_items', threadMediaItems(flags['media-item']))
   set(body, 'slack_channel_id', nullValue(flags['slack-channel']))
-  if (operation.id === 'validateAsset') {
-    set(body, 'destination_ids', csv(flags.destination))
-    set(body, 'channels', csv(flags.channel))
-  }
   // A post's destination is chosen when it is published, so `posts update` has
   // no destination field — sending one is rejected by the API. Reject it here
   // with a clear message rather than forwarding an unrecognized key.
@@ -689,7 +688,29 @@ async function requestBody(operation, parsed, io) {
     body.scheduled_at = requiredFlag(flags, 'at')
     body.time_zone = requiredFlag(flags, 'time-zone')
   }
+  rejectFacebookPlacementOptions(body)
   return body
+}
+
+function rejectFacebookPlacementOptions(body) {
+  const options = [
+    body?.destination_options,
+    ...(Array.isArray(body?.posts)
+      ? body.posts.map((post) => post?.destination_options)
+      : []),
+  ]
+  if (
+    options.some(
+      (value) =>
+        value &&
+        typeof value === 'object' &&
+        Object.prototype.hasOwnProperty.call(value, 'facebook')
+    )
+  )
+    throw new CliError(
+      'Facebook placement is automatic. Remove the facebook destination option. A video publishes as a Reel; other media publishes to the Page feed.',
+      { exitCode: 2 }
+    )
 }
 
 function etagReadPath(operation, path) {
@@ -799,6 +820,7 @@ async function waitForPostCommand(
     waitComplete: waited.complete,
   })
   const output = {
+    outcome: publicationOutcome(data, publication),
     data,
     meta: {
       request_id: null,
@@ -815,7 +837,8 @@ async function waitForPostCommand(
       : publication.complete
         ? 'complete'
         : 'pending'
-    return write(io.stdout, `${status}\n`)
+    write(io.stdout, `${status}\n`)
+    return publication.action_required_post_ids.length ? 11 : 0
   }
   renderSuccess(output, parsed.flags, io)
   if (!waited.complete && !parsed.flags.json)
@@ -823,7 +846,7 @@ async function waitForPostCommand(
       io.stderr,
       `Provider work is still active. Run the same command again: ${publication.next_command}\n`
     )
-  return 0
+  return publication.action_required_post_ids.length ? 11 : 0
 }
 
 async function waitForPostSet(
@@ -945,6 +968,14 @@ function publicationMetadata(data, when, workspace, wait) {
         }
       : {}),
   }
+}
+
+function publicationOutcome(data, publication) {
+  if (publication.action_required_post_ids.length === 0) return 'success'
+  const posts = Array.isArray(data?.posts) ? data.posts : []
+  return posts.some((post) => post?.state === 'published')
+    ? 'partial_failure'
+    : 'failure'
 }
 
 async function runDoctor(
@@ -1637,6 +1668,7 @@ async function beginBrowserAuthorization(
 function safeAuthorizationMetadata(authorization) {
   return {
     object: 'cli_authorization',
+    sensitive: true,
     status: 'pending',
     verification_uri: authorization.verification_uri,
     verification_uri_complete:
@@ -2051,7 +2083,7 @@ function helpFor(command) {
       : 'No extra confirmation.'
   const inputNote =
     operation.id === 'publishPosts'
-      ? ' Include every draft Post in the group. Use --at queue to use the next destination queue slot. Exit 0 means OpenPMM accepted the state change. Add --wait for bounded publication status handling. The wait stops when each Post is terminal or needs action. Do not send publish again for a pending Post.'
+      ? ' Include every draft Post in the group. Use --at queue to use the next destination queue slot. Exit 0 means OpenPMM accepted the state change. Exit 11 means one or more Posts need action. Add --wait for bounded publication status handling. The wait stops when each Post is terminal or needs action. Do not send publish again for a pending Post.'
       : operation.id === 'createPosts'
         ? ' Use --when queue to use the next destination queue slot. Repeat --body in order to publish a self-reply chain on X, Bluesky, Mastodon, or Threads. Repeat --media-item <body-index>:<asset-id> to attach media to a specific item. A Facebook Post with one video uses the Reel placement automatically.'
       : operation.id === 'patchPost'
@@ -2066,8 +2098,6 @@ function helpFor(command) {
         ? ' Use --include attempts for provider status, error code, and request ID diagnostics.'
       : operation.id === 'retryPost'
         ? ' A Post with retry_safety may_duplicate also requires --acknowledge-duplicate-risk. Verify the provider before you use this flag.'
-      : operation.id === 'validateAsset'
-        ? ' Provide at least one target: --channel <channel> and/or --destination <id> (repeat either to check several).'
       : operation.id === 'submitFeedback'
         ? ' Use --message <text> or provide a JSON request body.'
       : operation.id === 'createSignupIntent'
@@ -2089,7 +2119,7 @@ function helpFor(command) {
     operation.id === 'createPosts'
       ? 'Examples:\n  openpmm posts create --when draft --channel x --body "Draft copy" --json\n  openpmm posts create --destination dest_01JABCDEF --body "Publish copy" --yes --json'
       : `Example:\n  openpmm ${command}${positional ? ` ${positional}` : ''}${operation.path.includes('{workspace_id}') ? ' --workspace ws_01JABCDEF' : ''}${operation.body ? ' --file request.json' : ''}${confirmation ? ' --yes' : ''} --json`
-  return `${command}\n\nUsage:\n  openpmm ${command}${positional ? ` ${positional}` : ''} [flags]\n\n${operationTitle(operation)} through the public API.\nCalls ${operation.method} ${operation.path}.\nRequired scope: ${scopeFor(operation)}\nWorkspace: ${operation.path.includes('{workspace_id}') ? 'required' : 'not required'}\nSide effects: ${sideEffects}\nInput: flags or --file <request.json>; use --file - for stdin.${inputNote}\nOutput: human by default. Use the output flags below for automation.\nRelevant exits: 0 success, 1 error, 2 input, 3 auth, 4 scope, 5 not found, 6 conflict, 7 validation, 8 unavailable, 9 ambiguous, 10 confirmation.\n\nFlags:\n${formatFlagHelp(flagsForOperation(operation))}\n\n${examples}\n`
+  return `${command}\n\nUsage:\n  openpmm ${command}${positional ? ` ${positional}` : ''} [flags]\n\n${operationTitle(operation)} through the public API.\nCalls ${operation.method} ${operation.path}.\nRequired scope: ${scopeFor(operation)}\nWorkspace: ${operation.path.includes('{workspace_id}') ? 'required' : 'not required'}\nSide effects: ${sideEffects}\nInput: flags or --file <request.json>; use --file - for stdin.${inputNote}\nOutput: human by default. Use the output flags below for automation.\nRelevant exits: 0 success, 1 error, 2 input, 3 auth, 4 scope, 5 not found, 6 conflict, 7 validation, 8 unavailable, 9 ambiguous, 10 confirmation, 11 publication needs action.\n\nFlags:\n${formatFlagHelp(flagsForOperation(operation))}\n\n${examples}\n`
 }
 
 function requiresConfirmation(operation) {
@@ -2127,7 +2157,7 @@ function scopeFor(operation) {
   if (operation.path.includes('webhook-endpoints'))
     return operation.method === 'GET' ? 'webhooks:read' : 'webhooks:write'
   if (operation.path.includes('asset'))
-    return operation.id === 'validateAsset' || operation.method === 'GET'
+    return operation.method === 'GET'
       ? 'assets:read'
       : 'assets:write'
   if (

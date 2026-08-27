@@ -502,6 +502,10 @@ test('signup returns immediately and resume stores browser-authorized credential
     JSON.parse(signupOutput).data.signup_url,
     'https://app.openpmm.com/signup/token?next=%2Fcli%2Fauthorize%2Fbrowser'
   )
+  assert.equal(
+    JSON.parse(signupOutput).data.cli_authorization.sensitive,
+    true
+  )
   assert.match(stderr.read(), /https:\/\/app\.openpmm\.com\/signup\/token/)
   let stored = JSON.parse(await readFile(credentialPath, 'utf8'))
   assert.equal(stored.pending['https://api.openpmm.com/v1'].device_secret, 'device-secret-value-that-must-stay-private')
@@ -655,51 +659,6 @@ test('billing subscribe sends the interval, confirmation, and idempotency key', 
   assert.equal(seen.url, 'https://api.openpmm.com/v1/billing/checkout-sessions')
   assert.equal(seen.headers['Idempotency-Key'], 'billing_test_1')
   assert.deepEqual(seen.body, { interval: 'year', confirmed: true })
-})
-
-test('media validation sends destination IDs through the public API', async () => {
-  let seen
-  const stdout = output()
-  await withApiKey(async () => {
-    const exitCode = await run(
-      [
-        'assets',
-        'validate',
-        'asset_1',
-        '--workspace',
-        'ws_1',
-        '--destination',
-        'dst_1',
-        '--destination',
-        'dst_2',
-        '--json',
-      ],
-      { stdin: process.stdin, stdout: stdout.stream, stderr: output().stream },
-      {
-        fetchImpl: async (url, init) => {
-          seen = { url: String(url), body: JSON.parse(init.body) }
-          return new Response(
-            JSON.stringify({
-              object: 'media_validation',
-              media_kind: 'image',
-              asset_id: 'asset_1',
-              metadata_version: 1,
-              status: 'compatible_original',
-              issues: [],
-            }),
-            { headers: { 'content-type': 'application/json' } }
-          )
-        },
-      }
-    )
-    assert.equal(exitCode, 0)
-  })
-  assert.equal(
-    seen.url,
-    'https://api.openpmm.com/v1/workspaces/ws_1/assets/asset_1/validations'
-  )
-  assert.deepEqual(seen.body, { destination_ids: ['dst_1', 'dst_2'] })
-  assert.match(stdout.read(), /"media_validation"/)
 })
 
 test('Bluesky connection sends the account identifier', async () => {
@@ -1362,7 +1321,7 @@ test('a permanently failed Post stops waiting and requires action', async () => 
         },
       }
     )
-    assert.equal(exitCode, 0)
+    assert.equal(exitCode, 11)
   })
 
   const parsed = JSON.parse(out.read())
@@ -1370,6 +1329,7 @@ test('a permanently failed Post stops waiting and requires action', async () => 
   assert.equal(parsed.meta.publication.complete, false)
   assert.deepEqual(parsed.meta.publication.pending_post_ids, [])
   assert.deepEqual(parsed.meta.publication.action_required_post_ids, ['send_1'])
+  assert.equal(parsed.outcome, 'failure')
 })
 
 test('posts wait quiet reports attention for action-required work', async () => {
@@ -1391,10 +1351,58 @@ test('posts wait quiet reports attention for action-required work', async () => 
           ),
       }
     )
-    assert.equal(exitCode, 0)
+    assert.equal(exitCode, 11)
   })
 
   assert.equal(out.read(), 'attention\n')
+})
+
+test('posts wait preserves mixed publication results and exits for action', async () => {
+  const out = output()
+  await withApiKey(async () => {
+    const exitCode = await run(
+      [
+        'posts',
+        'wait',
+        'send_published',
+        'send_attention',
+        '--workspace',
+        'ws_1',
+        '--json',
+      ],
+      { stdin: process.stdin, stdout: out.stream, stderr: output().stream },
+      {
+        fetchImpl: async (url) =>
+          new Response(
+            JSON.stringify(
+              String(url).endsWith('/send_published')
+                ? {
+                    id: 'send_published',
+                    state: 'published',
+                    terminal: true,
+                    receipts: [{ id: 'receipt_1', state: 'published' }],
+                  }
+                : {
+                    id: 'send_attention',
+                    state: 'needs-attention',
+                    terminal: false,
+                    action_required: true,
+                    available_actions: ['retry'],
+                  }
+            ),
+            { headers: { 'content-type': 'application/json' } }
+          ),
+      }
+    )
+    assert.equal(exitCode, 11)
+  })
+
+  const parsed = JSON.parse(out.read())
+  assert.equal(parsed.outcome, 'partial_failure')
+  assert.equal(parsed.data.posts[0].receipts[0].id, 'receipt_1')
+  assert.deepEqual(parsed.meta.publication.action_required_post_ids, [
+    'send_attention',
+  ])
 })
 
 test('posts publish can wait for provider completion through the Post command', async () => {
@@ -1460,6 +1468,7 @@ test('posts publish can wait for provider completion through the Post command', 
   assert.equal(parsed.meta.waited, true)
   assert.equal(parsed.meta.wait_complete, true)
   assert.equal(parsed.meta.publication.complete, true)
+  assert.equal(parsed.outcome, 'success')
   assert.equal(parsed.data.posts[0].receipts[0].id, 'rcpt_1')
   assert.equal(calls.length, 2)
 })
@@ -1549,13 +1558,14 @@ test('posts publish wait stops when a Post requires action', async () => {
         },
       }
     )
-    assert.equal(exitCode, 0)
+    assert.equal(exitCode, 11)
   })
 
   const parsed = JSON.parse(out.read())
   assert.equal(parsed.meta.wait_complete, true)
   assert.equal(parsed.meta.publication.complete, false)
   assert.deepEqual(parsed.meta.publication.action_required_post_ids, ['send_1'])
+  assert.equal(parsed.outcome, 'failure')
   assert.equal(parsed.data.posts[0].action_required, true)
   assert.equal(calls, 1)
 })
@@ -2216,6 +2226,71 @@ test('posts create lets the API derive a Facebook Reel from video media', async 
     media: ['ast_video'],
     destination_options: null,
   })
+})
+
+test('posts create rejects retired Facebook placement before any request', async () => {
+  let called = false
+  const err = output()
+  await withApiKey(async () => {
+    const exitCode = await run(
+      [
+        'posts',
+        'create',
+        '--workspace',
+        'ws_1',
+        '--destination',
+        'dst_facebook',
+        '--body',
+        'Facebook video',
+        '--destination-options',
+        '{"facebook":{"placement":"feed"}}',
+        '--yes',
+      ],
+      { stdin: process.stdin, stdout: output().stream, stderr: err.stream },
+      {
+        fetchImpl: async () => {
+          called = true
+          return new Response('{}')
+        },
+      }
+    )
+    assert.equal(exitCode, 2)
+  })
+  assert.equal(called, false)
+  assert.match(err.read(), /Facebook placement is automatic/)
+})
+
+test('posts create rejects retired Facebook placement in a complete body', async () => {
+  let called = false
+  const err = output()
+  const input = Readable.from(
+    JSON.stringify({
+      confirmed: true,
+      when: 'now',
+      posts: [
+        {
+          destination_id: 'dst_facebook',
+          body: ['Facebook video'],
+          destination_options: { facebook: { placement: 'reel' } },
+        },
+      ],
+    })
+  )
+  await withApiKey(async () => {
+    const exitCode = await run(
+      ['posts', 'create', '--workspace', 'ws_1', '--file', '-', '--yes'],
+      { stdin: input, stdout: output().stream, stderr: err.stream },
+      {
+        fetchImpl: async () => {
+          called = true
+          return new Response('{}')
+        },
+      }
+    )
+    assert.equal(exitCode, 2)
+  })
+  assert.equal(called, false)
+  assert.match(err.read(), /Facebook placement is automatic/)
 })
 
 test('posts create forwards one Bluesky video and its publishing options', async () => {

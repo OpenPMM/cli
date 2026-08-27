@@ -27,6 +27,7 @@ test('publishing help is a stable, copy-pasteable public contract', async () => 
   const help = stdout.read()
   assert.match(help, /Calls POST \/workspaces\/\{workspace_id\}\/posts\/publish\./)
   assert.match(help, /Exit 0 means OpenPMM accepted the state change/)
+  assert.match(help, /11 publication needs action/)
   assert.match(help, /Do not send publish again for a pending Post/)
   for (const flag of [
     '--workspace <id>',

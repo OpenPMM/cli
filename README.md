@@ -37,7 +37,7 @@ Node.js 22 or newer is required.
 For deterministic automation, pin the package version:
 
 ```bash
-npx -y @openpmm/cli@0.4.1 doctor --json
+npx -y @openpmm/cli@0.5.0 doctor --json
 ```
 
 If a global install succeeds but `openpmm` is not found, inspect the npm
@@ -159,14 +159,16 @@ openpmm posts publish \
 ```
 
 `posts publish` waits for the OpenPMM API response. Exit code `0` means that
-OpenPMM accepted or completed the requested state change. It does not always
-mean that provider work is complete.
+OpenPMM accepted or completed the requested state change. Exit code `11` means
+that one or more Posts need action. Both exits preserve the JSON result and any
+publication receipts.
 
 - A scheduled or queued result needs no immediate status polling.
 - An immediate result with `meta.publication.complete: true` is complete.
 - An immediate result with `meta.publication.pending_post_ids` still has
   active provider work. Do not run `posts publish` again.
-- A result with `meta.publication.action_required_post_ids` needs review. Stop
+- `outcome` is `success`, `partial_failure`, or `failure`.
+- A result with `meta.publication.action_required_post_ids` exits `11`. Stop
   and inspect each Post's `available_actions`.
 - Use `posts publish --wait` for a bounded wait, or run the returned
   `meta.publication.next_command`.
@@ -251,7 +253,7 @@ listing, status, and tests remain Workspace-scoped.
 | Billing | `billing show`, `billing subscribe`, `billing portal`, `billing convert-trial` |
 | Team | `team members list`, `team invitations create` |
 | Posts | `posts create`, `posts list`, `posts update`, `posts publish` |
-| Assets | `assets list`, `assets upload`, `assets validate`, `assets download` |
+| Assets | `assets list`, `assets upload`, `assets show`, `assets download` |
 | Destinations | `destinations list`, `destinations connect`, `destinations refresh`, `destinations disconnect` |
 | Notifications | `slack connect`, `slack disconnect`, `slack show`, `slack update`, `slack channels`, `slack test` |
 | Webhooks | `webhooks list`, `webhooks create`, `webhooks rotate-secret`, `webhooks verify` |
