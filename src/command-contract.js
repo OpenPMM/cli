@@ -105,7 +105,6 @@ const OPERATION_FLAGS = {
   submitFeedback: ['message'],
   removeAccountMember: ['confirmation'],
   createAccountInvitation: ['email'],
-  validateAsset: ['channel', 'destination'],
   patchDestination: ['enabled', 'default', 'queue-policy'],
   createDestinationConnectionSession: [
     'provider',
