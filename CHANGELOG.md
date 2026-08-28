@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Documented `thumbnail_timestamp_ms` for selecting a YouTube thumbnail frame
+  through `--destination-options`.
+
 ## 0.6.0 - 2026-08-27
 
 - Renamed the generic video Asset kind from `reel` to `video`. The retired

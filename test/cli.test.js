@@ -2350,6 +2350,55 @@ test('posts create forwards one Bluesky video and its publishing options', async
   })
 })
 
+test('posts create forwards a YouTube thumbnail time', async () => {
+  let body
+  await withApiKey(async () => {
+    const exitCode = await run(
+      [
+        'posts',
+        'create',
+        '--workspace',
+        'ws_1',
+        '--destination',
+        'dst_youtube',
+        '--headline',
+        'Feature title',
+        '--body',
+        'Feature description',
+        '--media',
+        'ast_video',
+        '--destination-options',
+        '{"youtube":{"kind":"short","privacy_status":"private","category_id":"22","self_declared_made_for_kids":false,"contains_synthetic_media":false,"notify_subscribers":false,"thumbnail_timestamp_ms":1000}}',
+        '--yes',
+        '--json',
+      ],
+      {
+        stdin: process.stdin,
+        stdout: output().stream,
+        stderr: output().stream,
+      },
+      {
+        fetchImpl: async (_url, init) => {
+          body = JSON.parse(init.body)
+          return new Response(
+            JSON.stringify({ object: 'post_set', posts: [] }),
+            {
+              status: 201,
+              headers: { 'content-type': 'application/json' },
+            }
+          )
+        },
+      }
+    )
+    assert.equal(exitCode, 0)
+  })
+
+  assert.equal(
+    body.posts[0].destination_options.youtube.thumbnail_timestamp_ms,
+    1000
+  )
+})
+
 test('posts publish composes a same-Post publication request', async () => {
   let body
   await withApiKey(async () => {

@@ -210,6 +210,19 @@ existing file.
 `video` is a generic Asset kind. It does not select a YouTube Short, Facebook
 Reel, or Instagram Reel. Set the destination options when you create the Post.
 
+For YouTube, `thumbnail_timestamp_ms` selects a frame from the attached video:
+
+```bash
+openpmm posts create \
+  --destination dest_... \
+  --headline 'Feature title' \
+  --body 'Feature description' \
+  --media media_reel_... \
+  --destination-options '{"youtube":{"kind":"short","privacy_status":"private","category_id":"22","self_declared_made_for_kids":false,"contains_synthetic_media":false,"notify_subscribers":false,"thumbnail_timestamp_ms":1000}}' \
+  --yes \
+  --json
+```
+
 ### Send feedback
 
 Send product feedback for the active workspace:
