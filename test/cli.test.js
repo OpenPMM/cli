@@ -302,7 +302,11 @@ test('analytics refresh returns immediately or waits for current values', async 
               }
             )
           return new Response(
-            JSON.stringify({ object: 'post_analytics', state: 'ready', metrics: { comments: 4 } }),
+            JSON.stringify({
+              object: 'post_analytics',
+              state: 'ready',
+              metrics: { views: 12, comments: 4 },
+            }),
             { headers: { 'content-type': 'application/json' } }
           )
         },
@@ -315,6 +319,7 @@ test('analytics refresh returns immediately or waits for current values', async 
   assert.equal(calls[0].headers['Idempotency-Key'], 'analytics_test_1')
   assert.equal(calls[1].url, 'https://api.openpmm.com/v1/workspaces/ws_1/analytics/posts/post_1')
   const rendered = JSON.parse(stdout.read())
+  assert.equal(rendered.data.metrics.views, 12)
   assert.equal(rendered.data.metrics.comments, 4)
   assert.equal(rendered.meta.waited, true)
 })
