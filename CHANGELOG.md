@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0 - 2026-09-01
+
 - Documented `thumbnail_timestamp_ms` for selecting a YouTube thumbnail frame
   through `--destination-options`.
 

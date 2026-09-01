@@ -37,7 +37,7 @@ Node.js 22 or newer is required.
 For deterministic automation, pin the package version:
 
 ```bash
-npx -y @openpmm/cli@0.6.0 doctor --json
+npx -y @openpmm/cli@0.7.0 doctor --json
 ```
 
 If a global install succeeds but `openpmm` is not found, inspect the npm
