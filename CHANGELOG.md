@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.8.0 - 2026-10-23
+
 - Added the `inbox` commands for comments on your posts: `inbox summary`,
   `inbox threads list|show|resolve`, `inbox list`, `inbox show`,
   `inbox resolve`, `inbox reopen`, `inbox reply`, and `inbox refresh`.
