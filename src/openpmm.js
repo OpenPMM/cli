@@ -87,7 +87,9 @@ export async function run(
 
     const match = localWorkflow
       ? null
-      : (matchAnalyticsCommand(parsed) ?? matchCommand(parsed.words))
+      : (matchAnalyticsCommand(parsed) ??
+        matchInboxReopen(parsed) ??
+        matchCommand(parsed.words))
     if (!match && !localWorkflow)
       throw new CliError(
         `Unknown command: ${parsed.words.join(' ')}. Run \`openpmm --help\` to see commands.`,
@@ -385,6 +387,7 @@ const VALUE_FLAGS = new Set([
   'body',
   'bucket',
   'channel',
+  'comment-digest',
   'confirmation',
   'content-mode',
   'content-type',
@@ -417,7 +420,10 @@ const VALUE_FLAGS = new Set([
   'destination-options',
   'created-after',
   'scheduled-before',
+  'since',
+  'sort',
   'state',
+  'thread',
   'output',
   'page-size',
   'post',
@@ -505,6 +511,16 @@ function matchCommand(words) {
   return null
 }
 
+/** `inbox reopen` sets a resolved comment back to unanswered through Update Comment. */
+function matchInboxReopen(parsed) {
+  if (parsed.words.slice(0, 2).join(' ') !== 'inbox reopen') return null
+  parsed.reopen = true
+  return {
+    operation: OPERATION_BY_COMMAND.get('inbox resolve'),
+    positionals: parsed.words.slice(2),
+  }
+}
+
 function matchAnalyticsCommand(parsed, requireSelector = true) {
   const command = parsed.words.slice(0, 2).join(' ')
   if (!['analytics show', 'analytics refresh'].includes(command)) return null
@@ -567,6 +583,7 @@ async function requestBody(operation, parsed, io) {
   set(body, 'asset_ids', csv(flags.media))
   set(body, 'asset_items', threadMediaItems(flags['media-item']))
   set(body, 'slack_channel_id', nullValue(flags['slack-channel']))
+  set(body, 'comment_digest_enabled', booleanValue(flags['comment-digest']))
   // A post's destination is chosen when it is published, so `posts update` has
   // no destination field — sending one is rejected by the API. Reject it here
   // with a clear message rather than forwarding an unrecognized key.
@@ -684,6 +701,16 @@ async function requestBody(operation, parsed, io) {
       ],
     }
   }
+  if (operation.id === 'patchInboxComment' && !flags.file)
+    body = { state: parsed.reopen ? 'unanswered' : 'resolved' }
+  if (operation.id === 'createInboxReply' && !flags.file) {
+    const text = requiredFlag(flags, 'body')
+    if (Array.isArray(text))
+      throw new CliError('A reply accepts one --body value.', { exitCode: 2 })
+    body = { body: text, confirmed: true }
+  }
+  if (operation.id === 'refreshInbox' && !flags.file)
+    body = flags.destination ? { destination_id: flags.destination } : {}
   if (operation.id === 'reschedulePost') {
     body.scheduled_at = requiredFlag(flags, 'at')
     body.time_zone = requiredFlag(flags, 'time-zone')
@@ -1417,13 +1444,19 @@ function queryFrom(flags, operation) {
     ...(operation.id === 'getAnalyticsReport'
       ? ['from', 'until', 'channel', 'after', 'limit']
       : []),
+    ...(['listInboxThreads', 'listInboxComments'].includes(operation.id)
+      ? ['state', 'channel', 'sort', 'since', 'until']
+      : []),
+    ...(operation.id === 'listInboxComments' ? ['thread', 'post'] : []),
   ]
   return {
     ...(operation.id === 'getAnalyticsReport'
       ? { bucket: flags.bucket ?? 'day' }
       : {}),
     ...(operation.paginated && pageSize ? { limit: pageSize } : {}),
-    ...(operation.id === 'listPosts' && flags.destination !== undefined
+    ...(['listPosts', 'listInboxThreads', 'listInboxComments'].includes(
+      operation.id
+    ) && flags.destination !== undefined
       ? { destination_id: flags.destination }
       : {}),
     ...(operation.id === 'listPosts' && flags['created-after'] !== undefined
@@ -2039,6 +2072,7 @@ function helpFor(command) {
       'assets download',
       'assets upload',
       'doctor',
+      'inbox reopen',
       'posts wait',
       'webhooks verify',
     ]
@@ -2063,6 +2097,10 @@ function helpFor(command) {
     'webhooks verify':
       `webhooks verify\n\nUsage:\n  openpmm webhooks verify [flags]\n\nVerify OpenPMM-Signature against the exact payload bytes. Set OPENPMM_WEBHOOK_SECRET or pass a protected secret file. This local command does not call the API.\n\nFlags:\n${formatFlagHelp(flagsForConvenienceCommand('webhooks verify'))}\n`,
   }
+  if (command === 'inbox reopen') {
+    const operation = OPERATION_BY_COMMAND.get('inbox resolve')
+    return `inbox reopen\n\nUsage:\n  openpmm inbox reopen <comment> [flags]\n\nOpen a resolved comment again. A comment with a reply returns to replied. This command calls PATCH ${operation.path} with state unanswered.\n\nFlags:\n${formatFlagHelp(flagsForOperation(operation))}\n`
+  }
   if (convenienceHelp[command]) return convenienceHelp[command]
   const operation = OPERATION_BY_COMMAND.get(command)
   if (!operation) return helpFor('')
@@ -2079,6 +2117,8 @@ function helpFor(command) {
         ? 'Requires --yes. This can start or charge a subscription.'
         : operation.id === 'publishPosts'
           ? 'Requires --yes. This can create external provider posts.'
+        : operation.id === 'createInboxReply'
+          ? 'Requires --yes. This posts a public reply that you cannot undo.'
         : 'Requires --yes. This can publish, disconnect, or delete data.'
     : operation.id === 'createPosts'
       ? 'Requires --yes unless the request creates a draft.'
@@ -2088,6 +2128,12 @@ function helpFor(command) {
       ? ' Include every draft Post in the group. Use --at queue to use the next destination queue slot. Exit 0 means OpenPMM accepted the state change. Exit 11 means one or more Posts need action. Add --wait for bounded publication status handling. The wait stops when each Post is terminal or needs action. Do not send publish again for a pending Post.'
       : operation.id === 'createPosts'
         ? ' Use --when queue to use the next destination queue slot. Repeat --body in order to publish a self-reply chain on X, Bluesky, Mastodon, or Threads. Repeat --media-item <body-index>:<asset-id> to attach media to a specific item. A Facebook Post with one video uses the Reel placement automatically.'
+      : operation.id === 'createInboxReply'
+        ? ' OpenPMM sends --body without changes. Add an @handle yourself where the channel expects one. The command returns when the reply is queued. Run inbox show <comment> to follow the reply state. A read-only destination, such as YouTube, refuses replies.'
+      : ['listInboxThreads', 'listInboxComments'].includes(operation.id)
+        ? ' The default order shows unanswered comments first. Use --state unanswered for the open queue.'
+      : operation.id === 'patchInboxComment'
+        ? ' This command marks the comment resolved. Use inbox reopen <comment> to open it again.'
       : operation.id === 'patchPost'
         ? ' You can change copy and publishing options on a draft or scheduled Post. Cancel a schedule before you change assets or thread structure.'
       : operation.id === 'movePostsInQueue'

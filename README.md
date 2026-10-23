@@ -269,6 +269,7 @@ listing, status, and tests remain Workspace-scoped.
 | Billing | `billing show`, `billing subscribe`, `billing portal`, `billing convert-trial` |
 | Team | `team members list`, `team invitations create` |
 | Posts | `posts create`, `posts list`, `posts update`, `posts publish` |
+| Inbox | `inbox list`, `inbox threads list`, `inbox reply`, `inbox resolve`, `inbox refresh` |
 | Assets | `assets list`, `assets upload`, `assets show`, `assets download` |
 | Destinations | `destinations list`, `destinations connect`, `destinations refresh`, `destinations disconnect` |
 | Notifications | `slack connect`, `slack disconnect`, `slack show`, `slack update`, `slack channels`, `slack test` |

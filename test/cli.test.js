@@ -2996,3 +2996,138 @@ test('an unknown flag without a value exits 2 through the handler, not a raw cra
   assert.match(stderr.read(), /Unknown flag --made-up-flag/)
   assert.doesNotMatch(stderr.read(), /at \w+.*\(/)
 })
+
+function inboxRun(args, requests, response = {}) {
+  return run(
+    [...args, '--workspace', 'ws_1', '--json'],
+    { stdin: process.stdin, stdout: output().stream, stderr: output().stream },
+    {
+      fetchImpl: async (url, init = {}) => {
+        requests.push({
+          url: new URL(String(url)),
+          method: init.method ?? 'GET',
+          headers: new Headers(init.headers),
+          body: init.body ? JSON.parse(init.body) : undefined,
+        })
+        return new Response(JSON.stringify(response), {
+          status: init.method === 'POST' ? 202 : 200,
+          headers: { 'content-type': 'application/json' },
+        })
+      },
+    }
+  )
+}
+
+test('inbox commands read threads and comments through /v1 filters', async () => {
+  const requests = []
+  await withApiKey(async () => {
+    assert.equal(
+      await inboxRun(
+        [
+          'inbox', 'list', '--state', 'unanswered', '--channel', 'mastodon',
+          '--destination', 'dest_1', '--thread', 'thr_1', '--sort', 'newest',
+          '--since', '2026-09-01T00:00:00Z', '--limit', '5',
+        ],
+        requests,
+        { data: [], has_more: false, next_cursor: null }
+      ),
+      0
+    )
+    assert.equal(
+      await inboxRun(['inbox', 'threads', 'show', 'thr_1'], requests, {
+        object: 'inbox_thread',
+      }),
+      0
+    )
+    assert.equal(await inboxRun(['inbox', 'summary'], requests), 0)
+  })
+  assert.equal(requests[0].url.pathname, '/v1/workspaces/ws_1/inbox/comments')
+  assert.deepEqual(Object.fromEntries(requests[0].url.searchParams), {
+    limit: '5',
+    state: 'unanswered',
+    channel: 'mastodon',
+    sort: 'newest',
+    since: '2026-09-01T00:00:00Z',
+    thread: 'thr_1',
+    destination_id: 'dest_1',
+  })
+  assert.equal(requests[1].url.pathname, '/v1/workspaces/ws_1/inbox/threads/thr_1')
+  assert.equal(requests[2].url.pathname, '/v1/workspaces/ws_1/inbox')
+})
+
+test('inbox reply requires --yes and sends one confirmed, idempotent reply', async () => {
+  const requests = []
+  await withApiKey(async () => {
+    assert.equal(
+      await inboxRun(['inbox', 'reply', 'cmt_1', '--body', '@andy thanks'], requests),
+      10
+    )
+    assert.equal(requests.length, 0)
+    assert.equal(
+      await inboxRun(
+        ['inbox', 'reply', 'cmt_1', '--body', '@andy thanks', '--yes'],
+        requests,
+        { object: 'inbox_reply', state: 'queued' }
+      ),
+      0
+    )
+  })
+  assert.equal(requests[0].method, 'POST')
+  assert.equal(
+    requests[0].url.pathname,
+    '/v1/workspaces/ws_1/inbox/comments/cmt_1/replies'
+  )
+  assert.deepEqual(requests[0].body, { body: '@andy thanks', confirmed: true })
+  assert.ok(requests[0].headers.get('idempotency-key'))
+})
+
+test('inbox resolve, reopen, thread resolve, and refresh map to their operations', async () => {
+  const requests = []
+  await withApiKey(async () => {
+    for (const args of [
+      ['inbox', 'resolve', 'cmt_1'],
+      ['inbox', 'reopen', 'cmt_1'],
+      ['inbox', 'threads', 'resolve', 'thr_1'],
+      ['inbox', 'refresh', '--destination', 'dest_1'],
+      ['inbox', 'refresh'],
+    ])
+      assert.equal(await inboxRun(args, requests, { object: 'x' }), 0, args.join(' '))
+  })
+  assert.deepEqual(
+    requests.map((request) => [request.method, request.url.pathname, request.body]),
+    [
+      ['PATCH', '/v1/workspaces/ws_1/inbox/comments/cmt_1', { state: 'resolved' }],
+      ['PATCH', '/v1/workspaces/ws_1/inbox/comments/cmt_1', { state: 'unanswered' }],
+      ['POST', '/v1/workspaces/ws_1/inbox/threads/thr_1/resolve', undefined],
+      ['POST', '/v1/workspaces/ws_1/inbox/refresh', { destination_id: 'dest_1' }],
+      ['POST', '/v1/workspaces/ws_1/inbox/refresh', {}],
+    ]
+  )
+})
+
+test('inbox reopen has its own help', async () => {
+  const stdout = output()
+  assert.equal(
+    await run(['inbox', 'reopen', '--help'], {
+      stdin: process.stdin,
+      stdout: stdout.stream,
+      stderr: output().stream,
+    }),
+    0
+  )
+  assert.match(stdout.read(), /openpmm inbox reopen <comment>/)
+})
+
+test('slack update can turn the inbox comment digest on without a channel change', async () => {
+  const requests = []
+  await withApiKey(async () => {
+    assert.equal(
+      await inboxRun(['slack', 'update', '--comment-digest', 'true'], requests, {
+        object: 'notification_settings',
+      }),
+      0
+    )
+  })
+  assert.equal(requests[0].method, 'PATCH')
+  assert.deepEqual(requests[0].body, { comment_digest_enabled: true })
+})
