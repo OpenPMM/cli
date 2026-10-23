@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Added the `inbox` commands for comments on your posts: `inbox summary`,
+  `inbox threads list|show|resolve`, `inbox list`, `inbox show`,
+  `inbox resolve`, `inbox reopen`, `inbox reply`, and `inbox refresh`.
+  `inbox reply` posts a public reply and requires `--yes`.
+- The inbox commands need the `inbox:read` and `inbox:write` scopes. Run
+  `openpmm auth login` again if a saved credential predates them.
+- Added `slack update --comment-digest <true|false>` for a batched Slack
+  message about new inbox comments.
+
 ## 0.7.0 - 2026-09-01
 
 - Documented `thumbnail_timestamp_ms` for selecting a YouTube thumbnail frame
